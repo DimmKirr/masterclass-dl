@@ -13,18 +13,27 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Danny-Dasilva/CycleTLS/cycletls"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 	"go.nhat.io/cookiejar"
 )
 
+// Common constants for requests
+const (
+	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+	ja3       = "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0"
+)
+
 func main() {
 	var datDir string
+	var debug bool
 	var rootCmd = &cobra.Command{
 		Use:   "masterclass-dl",
 		Short: "A downloader for classes from masterclass.com",
 	}
 	rootCmd.PersistentFlags().StringVarP(&datDir, "datDir", "d", "", "Path to the directory where cookies and other data will be stored (default: $HOME/.masterclass/)")
+	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output")
 	if datDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -72,7 +81,7 @@ func main() {
 		Run: func(cmd *cobra.Command, args []string) {
 			email := args[0]
 			password := args[1]
-			err := login(getClient(datDir), datDir, email, password)
+			err := login(getClient(datDir), datDir, email, password, debug)
 			if err != nil {
 				fmt.Println(err)
 				return
@@ -118,70 +127,392 @@ func getClient(datDir string) *http.Client {
 	}
 }
 
-func login(client *http.Client, datDir string, email string, password string) error {
-	var csrfResponse CSRFResponse
-	req, err := http.NewRequest("GET", "https://www.masterclass.com/api/v2/csrf-token", nil)
-	if err != nil {
-		return err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("failed to get CSRF token")
-	}
-	err = json.NewDecoder(resp.Body).Decode(&csrfResponse)
-	if err != nil {
-		return err
-	}
-	if csrfResponse.Param == "" || csrfResponse.Token == "" || csrfResponse.Param != "authenticity_token" {
-		return fmt.Errorf("invalid CSRF token response")
+func login(client *http.Client, datDir string, email string, password string, debug bool) error {
+	// Initialize CycleTLS client to bypass Cloudflare
+	cycleclient := cycletls.Init()
+	// Note: CycleTLS Close() has issues, so we'll use recover to handle panics
+	defer func() {
+		if r := recover(); r != nil {
+			// Ignore panic from Close(), it's a known issue with CycleTLS
+		}
+	}()
+	defer func() {
+		cycleclient.Close()
+	}()
+
+	if debug {
+		fmt.Printf("Attempting login with email: %s\n", email)
+		fmt.Printf("Password length: %d characters\n", len(password))
+		if len(password) > 0 {
+			fmt.Printf("Password first char: %c, last char: %c\n", password[0], password[len(password)-1])
+		}
 	}
 
+	// First, visit the home page to establish session (required for login to work)
+	if debug {
+		fmt.Println("Visiting home page...")
+	}
+	homePageResp, err := cycleclient.Do("https://www.masterclass.com/", cycletls.Options{
+		Body:      "",
+		Ja3:       ja3,
+		UserAgent: userAgent,
+	}, "GET")
+	if err != nil {
+		return fmt.Errorf("failed to visit home page: %v", err)
+	}
+
+	// Build cookie string from home page response
+	var cookieStr string
+	for _, cookie := range homePageResp.Cookies {
+		if cookieStr != "" {
+			cookieStr += "; "
+		}
+		cookieStr += cookie.Name + "=" + cookie.Value
+	}
+
+	// Now visit the login page with cookies from home page
+	if debug {
+		fmt.Println("Visiting login page...")
+	}
+	loginPageResp, err := cycleclient.Do("https://www.masterclass.com/auth/login", cycletls.Options{
+		Body:      "",
+		Ja3:       ja3,
+		UserAgent: userAgent,
+		Headers: map[string]string{
+			"Referer": "https://www.masterclass.com/",
+			"Cookie":  cookieStr,
+		},
+	}, "GET")
+	if err != nil {
+		return fmt.Errorf("failed to visit login page: %v", err)
+	}
+
+	if debug && strings.Contains(loginPageResp.Body, "hidden") {
+		fmt.Println("Login page contains hidden form fields - might need to extract them")
+	}
+
+	// Update cookies from login page response
+	for _, cookie := range loginPageResp.Cookies {
+		// Check if cookie already exists, update it, otherwise append
+		found := false
+		for _, existing := range homePageResp.Cookies {
+			if existing.Name == cookie.Name {
+				existing.Value = cookie.Value
+				found = true
+				break
+			}
+		}
+		if !found {
+			homePageResp.Cookies = append(homePageResp.Cookies, cookie)
+		}
+	}
+
+	// Rebuild cookie string with all cookies
+	cookieStr = ""
+	for _, cookie := range homePageResp.Cookies {
+		if cookieStr != "" {
+			cookieStr += "; "
+		}
+		cookieStr += cookie.Name + "=" + cookie.Value
+	}
+
+	// Get CSRF token
+	if debug {
+		fmt.Println("Getting CSRF token...")
+	}
+	csrfResp, err := cycleclient.Do("https://www.masterclass.com/api/v2/csrf-token", cycletls.Options{
+		Body:      "",
+		Ja3:       ja3,
+		UserAgent: userAgent,
+		Headers: map[string]string{
+			"Referer": "https://www.masterclass.com/auth/login",
+			"Cookie":  cookieStr,
+		},
+	}, "GET")
+	if err != nil {
+		return fmt.Errorf("failed to get CSRF token: %v", err)
+	}
+	if csrfResp.Status != 200 {
+		return fmt.Errorf("failed to get CSRF token: status=%d, body=%s", csrfResp.Status, csrfResp.Body)
+	}
+
+	var csrfResponse CSRFResponse
+	err = json.Unmarshal([]byte(csrfResp.Body), &csrfResponse)
+	if err != nil {
+		return fmt.Errorf("failed to parse CSRF response: %v", err)
+	}
+	if csrfResponse.Param == "" || csrfResponse.Token == "" || csrfResponse.Param != "authenticity_token" {
+		return fmt.Errorf("invalid CSRF token response: param=%s, token=%s", csrfResponse.Param, csrfResponse.Token)
+	}
+
+	// Update cookies from CSRF response
+	for _, cookie := range csrfResp.Cookies {
+		// Check if cookie already exists, update it, otherwise append
+		found := false
+		for _, existing := range homePageResp.Cookies {
+			if existing.Name == cookie.Name {
+				existing.Value = cookie.Value
+				found = true
+				break
+			}
+		}
+		if !found {
+			homePageResp.Cookies = append(homePageResp.Cookies, cookie)
+		}
+	}
+
+	// Rebuild cookie string
+	cookieStr = ""
+	for _, cookie := range homePageResp.Cookies {
+		if cookieStr != "" {
+			cookieStr += "; "
+		}
+		cookieStr += cookie.Name + "=" + cookie.Value
+	}
+
+	// Prepare login data - NO authenticity_token in the body! Only in X-Csrf-Token header
 	data := url.Values{}
 	data.Set("next_page", "")
 	data.Set("auth_key", email)
 	data.Set("password", password)
 	data.Set("provider", "identity")
-	req, err = http.NewRequest("POST", "https://www.masterclass.com/auth/identity/callback", strings.NewReader(data.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("X-Csrf-Token", csrfResponse.Token)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Browser/27 Safari/537.36")
-	req.Header.Set("Sec-Ch-Ua-Platform", "\"Windows\"")
-	req.Header.Set("Sec-Ch-Ua", "\"Chromium\";v=\"94\", \"Google Chrome\";v=\"94\", \";Not A Brand\";v=\"99\"")
-	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
-	req.Header.Set("Referer", "https://www.masterclass.com/auth/login")
-	resp, err = client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("failed to login")
+
+	if debug {
+		fmt.Println("Logging in...")
+		fmt.Printf("Form data: %s\n", data.Encode())
+		fmt.Printf("CSRF token (header only): %s\n", csrfResponse.Token)
 	}
 
-	req, err = http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/profiles?deep=true", nil)
-	req.Header.Set("Referer", "https://www.masterclass.com/profiles")
+	// Perform login - headers must match browser (cors, not navigate!)
+	loginResp, err := cycleclient.Do("https://www.masterclass.com/auth/identity/callback", cycletls.Options{
+		Body:      data.Encode(),
+		Ja3:       ja3,
+		UserAgent: userAgent,
+		Headers: map[string]string{
+			"Accept":             "*/*",
+			"Accept-Language":    "en-GB,en-US;q=0.9,en;q=0.8",
+			"Content-Type":       "application/x-www-form-urlencoded",
+			"X-Csrf-Token":       csrfResponse.Token,
+			"Cookie":             cookieStr,
+			"Referer":            "https://www.masterclass.com/auth/login",
+			"Origin":             "https://www.masterclass.com",
+			"Sec-Ch-Ua":          "\"Chromium\";v=\"140\", \"Not=A?Brand\";v=\"24\", \"Google Chrome\";v=\"140\"",
+			"Sec-Ch-Ua-Mobile":   "?0",
+			"Sec-Ch-Ua-Platform": "\"macOS\"",
+			"Sec-Fetch-Dest":     "empty",
+			"Sec-Fetch-Mode":     "cors",
+			"Sec-Fetch-Site":     "same-origin",
+			"Priority":           "u=1, i",
+		},
+	}, "POST")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to login: %v", err)
 	}
-	resp, err = client.Do(req)
+
+	// Handle specific error statuses
+	if loginResp.Status == 429 {
+		return fmt.Errorf("rate limited by Masterclass. Please wait 15-60 minutes before trying again, or use a different network/VPN")
+	}
+
+	// Accept 200 or 302 (redirect) as success
+	if loginResp.Status != 200 && loginResp.Status != 302 {
+		return fmt.Errorf("failed to login: status=%d, body=%s", loginResp.Status, loginResp.Body)
+	}
+
+	if debug {
+		fmt.Printf("Login response status: %d\n", loginResp.Status)
+		fmt.Printf("Login response body length: %d bytes\n", len(loginResp.Body))
+	}
+
+	// Check if the HTML contains error indicators
+	if strings.Contains(loginResp.Body, "Invalid email") ||
+		strings.Contains(loginResp.Body, "Invalid password") ||
+		strings.Contains(loginResp.Body, "incorrect email or password") {
+		return fmt.Errorf("login failed: invalid credentials")
+	}
+
+	// Check all cookies in login response
+	hasSessionCookie := false
+	if debug {
+		fmt.Printf("Number of cookies in login response: %d\n", len(loginResp.Cookies))
+	}
+	for _, cookie := range loginResp.Cookies {
+		if debug {
+			valuePreview := cookie.Value
+			if len(valuePreview) > 50 {
+				valuePreview = valuePreview[:50] + "..."
+			}
+			fmt.Printf("  Cookie: %s = %s (len: %d)\n", cookie.Name, valuePreview, len(cookie.Value))
+		}
+		if cookie.Name == "_mc_session" && len(cookie.Value) > 100 {
+			hasSessionCookie = true
+			if debug {
+				fmt.Printf("  ✓ This is a valid authenticated session cookie\n")
+			}
+		}
+	}
+
+	if !hasSessionCookie {
+		// Print more of the HTML body to see what page we actually got
+		preview := loginResp.Body
+		if len(preview) > 3000 {
+			preview = preview[:3000]
+		}
+		if strings.Contains(preview, "<title>") {
+			titleStart := strings.Index(preview, "<title>") + 7
+			titleEnd := strings.Index(preview, "</title>")
+			if titleEnd > titleStart {
+				fmt.Printf("Page title: %s\n", preview[titleStart:titleEnd])
+			}
+		}
+		return fmt.Errorf("login failed - no valid session cookie received")
+	}
+
+	// Extract cookies and save to cookiejar
+	masterclassURL, _ := url.Parse("https://www.masterclass.com")
+
+	// Convert CycleTLS cookies to http.Cookie
+	// CycleTLS uses *http.Cookie directly, so we can just collect them
+	var cookies []*http.Cookie
+
+	// Collect all cookies from the session
+	allCookies := make(map[string]*http.Cookie)
+
+	// Add from home page
+	for _, cookie := range homePageResp.Cookies {
+		// Ensure cookie has proper domain set
+		if cookie.Domain == "" {
+			cookie.Domain = ".masterclass.com"
+		}
+		if cookie.Path == "" {
+			cookie.Path = "/"
+		}
+		allCookies[cookie.Name] = cookie
+	}
+
+	// Update/add from login response (overwrites duplicates)
+	for _, cookie := range loginResp.Cookies {
+		// Ensure cookie has proper domain set
+		if cookie.Domain == "" {
+			cookie.Domain = ".masterclass.com"
+		}
+		if cookie.Path == "" {
+			cookie.Path = "/"
+		}
+		allCookies[cookie.Name] = cookie
+	}
+
+	// Convert map to slice
+	for _, cookie := range allCookies {
+		cookies = append(cookies, cookie)
+	}
+
+	if debug {
+		fmt.Printf("Saving %d cookies to jar\n", len(cookies))
+		for _, c := range cookies {
+			fmt.Printf("  - %s (value length: %d)\n", c.Name, len(c.Value))
+		}
+	}
+	client.Jar.SetCookies(masterclassURL, cookies)
+
+	// Build clean cookie string from our collected cookies (no duplicates)
+	var cleanCookieStr string
+	seenCookies := make(map[string]bool)
+	for _, cookie := range cookies {
+		if !seenCookies[cookie.Name] {
+			if cleanCookieStr != "" {
+				cleanCookieStr += "; "
+			}
+			cleanCookieStr += cookie.Name + "=" + cookie.Value
+			seenCookies[cookie.Name] = true
+		}
+	}
+
+	if debug {
+		fmt.Printf("Using %d unique cookies\n", len(seenCookies))
+		fmt.Println("Visiting profiles page...")
+	}
+
+	// First, visit the profiles page to ensure session is active
+	profilesPageResp, err := cycleclient.Do("https://www.masterclass.com/profiles", cycletls.Options{
+		Body:      "",
+		Ja3:       ja3,
+		UserAgent: userAgent,
+		Headers: map[string]string{
+			"Cookie":  cleanCookieStr,
+			"Referer": "https://www.masterclass.com/",
+		},
+	}, "GET")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to visit profiles page: %v", err)
+	}
+	if debug {
+		fmt.Printf("Profiles page response status: %d\n", profilesPageResp.Status)
+	}
+
+	// Update cookies from profiles page visit
+	for _, cookie := range profilesPageResp.Cookies {
+		found := false
+		for i, existing := range cookies {
+			if existing.Name == cookie.Name {
+				cookies[i] = cookie
+				found = true
+				break
+			}
+		}
+		if !found {
+			cookies = append(cookies, cookie)
+		}
+	}
+
+	// Rebuild cookie string with updated cookies
+	cleanCookieStr = ""
+	seenCookies = make(map[string]bool)
+	for _, cookie := range cookies {
+		if !seenCookies[cookie.Name] {
+			if cleanCookieStr != "" {
+				cleanCookieStr += "; "
+			}
+			cleanCookieStr += cookie.Name + "=" + cookie.Value
+			seenCookies[cookie.Name] = true
+		}
+	}
+
+	// Now fetch profiles API
+	if debug {
+		fmt.Println("Fetching profiles API...")
+	}
+	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/profiles?deep=true", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create profiles request: %v", err)
+	}
+	req.Header.Set("Cookie", cleanCookieStr)
+	req.Header.Set("Referer", "https://www.masterclass.com/profiles")
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to get profiles: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("failed to get profiles")
+
+	if debug {
+		fmt.Printf("Profiles response status: %d\n", resp.StatusCode)
 	}
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to get profiles: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
 	var profiles []ProfileResponse
 	err = json.NewDecoder(resp.Body).Decode(&profiles)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to parse profiles: %v", err)
+	}
+
+	if len(profiles) == 0 {
+		return fmt.Errorf("no profiles found")
 	}
 
 	prompt := promptui.Select{
