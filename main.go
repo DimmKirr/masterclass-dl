@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"regexp"
 	"strings"
 
 	"github.com/Danny-Dasilva/CycleTLS/cycletls"
@@ -369,10 +368,12 @@ func login(client *http.Client, datDir string, email string, password string, de
 	}
 
 	// Extract cookies and save to cookiejar
-	masterclassURL, _ := url.Parse("https://www.masterclass.com")
+	// Use the base domain (without www) so cookies work across all subdomains
+	masterclassURL, _ := url.Parse("https://masterclass.com")
+	edgeURL, _ := url.Parse("https://edge.masterclass.com")
 
 	// Convert CycleTLS cookies to http.Cookie
-	// CycleTLS uses *http.Cookie directly, so we can just collect them
+	// Create NEW cookie objects with proper domain to ensure they work across subdomains
 	var cookies []*http.Cookie
 
 	// Collect all cookies from the session
@@ -380,26 +381,54 @@ func login(client *http.Client, datDir string, email string, password string, de
 
 	// Add from home page
 	for _, cookie := range homePageResp.Cookies {
-		// Ensure cookie has proper domain set
-		if cookie.Domain == "" {
-			cookie.Domain = ".masterclass.com"
+		// Create a new cookie with proper domain
+		domain := cookie.Domain
+		if domain == "" || domain == "masterclass.com" {
+			domain = ".masterclass.com" // Leading dot for subdomain sharing
 		}
-		if cookie.Path == "" {
-			cookie.Path = "/"
+		if !strings.HasPrefix(domain, ".") && strings.Contains(domain, ".") {
+			domain = "." + domain
 		}
-		allCookies[cookie.Name] = cookie
+		newCookie := &http.Cookie{
+			Name:     cookie.Name,
+			Value:    cookie.Value,
+			Path:     cookie.Path,
+			Domain:   domain,
+			Expires:  cookie.Expires,
+			Secure:   cookie.Secure,
+			HttpOnly: cookie.HttpOnly,
+			SameSite: cookie.SameSite,
+		}
+		if newCookie.Path == "" {
+			newCookie.Path = "/"
+		}
+		allCookies[cookie.Name] = newCookie
 	}
 
 	// Update/add from login response (overwrites duplicates)
 	for _, cookie := range loginResp.Cookies {
-		// Ensure cookie has proper domain set
-		if cookie.Domain == "" {
-			cookie.Domain = ".masterclass.com"
+		// Create a new cookie with proper domain
+		domain := cookie.Domain
+		if domain == "" || domain == "masterclass.com" {
+			domain = ".masterclass.com" // Leading dot for subdomain sharing
 		}
-		if cookie.Path == "" {
-			cookie.Path = "/"
+		if !strings.HasPrefix(domain, ".") && strings.Contains(domain, ".") {
+			domain = "." + domain
 		}
-		allCookies[cookie.Name] = cookie
+		newCookie := &http.Cookie{
+			Name:     cookie.Name,
+			Value:    cookie.Value,
+			Path:     cookie.Path,
+			Domain:   domain,
+			Expires:  cookie.Expires,
+			Secure:   cookie.Secure,
+			HttpOnly: cookie.HttpOnly,
+			SameSite: cookie.SameSite,
+		}
+		if newCookie.Path == "" {
+			newCookie.Path = "/"
+		}
+		allCookies[cookie.Name] = newCookie
 	}
 
 	// Convert map to slice
@@ -410,10 +439,12 @@ func login(client *http.Client, datDir string, email string, password string, de
 	if debug {
 		fmt.Printf("Saving %d cookies to jar\n", len(cookies))
 		for _, c := range cookies {
-			fmt.Printf("  - %s (value length: %d)\n", c.Name, len(c.Value))
+			fmt.Printf("  - %s (domain: %s, value length: %d)\n", c.Name, c.Domain, len(c.Value))
 		}
 	}
+	// Set cookies on both URLs to ensure they're available for all subdomains
 	client.Jar.SetCookies(masterclassURL, cookies)
+	client.Jar.SetCookies(edgeURL, cookies)
 
 	// Build clean cookie string from our collected cookies (no duplicates)
 	var cleanCookieStr string
@@ -430,53 +461,9 @@ func login(client *http.Client, datDir string, email string, password string, de
 
 	if debug {
 		fmt.Printf("Using %d unique cookies\n", len(seenCookies))
-		fmt.Println("Visiting profiles page...")
 	}
 
-	// First, visit the profiles page to ensure session is active
-	profilesPageResp, err := cycleclient.Do("https://www.masterclass.com/profiles", cycletls.Options{
-		Body:      "",
-		Ja3:       ja3,
-		UserAgent: userAgent,
-		Headers: map[string]string{
-			"Cookie":  cleanCookieStr,
-			"Referer": "https://www.masterclass.com/",
-		},
-	}, "GET")
-	if err != nil {
-		return fmt.Errorf("failed to visit profiles page: %v", err)
-	}
-	if debug {
-		fmt.Printf("Profiles page response status: %d\n", profilesPageResp.Status)
-	}
-
-	// Update cookies from profiles page visit
-	for _, cookie := range profilesPageResp.Cookies {
-		found := false
-		for i, existing := range cookies {
-			if existing.Name == cookie.Name {
-				cookies[i] = cookie
-				found = true
-				break
-			}
-		}
-		if !found {
-			cookies = append(cookies, cookie)
-		}
-	}
-
-	// Rebuild cookie string with updated cookies
-	cleanCookieStr = ""
-	seenCookies = make(map[string]bool)
-	for _, cookie := range cookies {
-		if !seenCookies[cookie.Name] {
-			if cleanCookieStr != "" {
-				cleanCookieStr += "; "
-			}
-			cleanCookieStr += cookie.Name + "=" + cookie.Value
-			seenCookies[cookie.Name] = true
-		}
-	}
+	// No need to visit profiles page - we already have the session cookie
 
 	// Now fetch profiles API
 	if debug {
@@ -702,43 +689,16 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		}
 	}
 
-	req, err = http.NewRequest("GET", "https://www.masterclass.com/classes/"+classSlug, nil)
-	req.Header.Set("Mc-Profile-Id", profile.UUID)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Browser/27 Safari/537.36")
-	req.Header.Set("Sec-Ch-Ua-Platform", "\"Windows\"")
-	req.Header.Set("Sec-Ch-Ua", "\"Chromium\";v=\"94\", \"Google Chrome\";v=\"94\", \";Not A Brand\";v=\"99\"")
-	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
-	if err != nil {
-		return err
-	}
-	resp, err = client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("failed to get class for API key")
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	apiKey := ""
-	re := regexp.MustCompile(`"MEDIA_METADATA_API_KEY"\s*:\s*"(.*?)"`)
-	matches := re.FindStringSubmatch(string(body))
-	if len(matches) > 1 {
-		apiKey = matches[1]
-	}
-	if apiKey == "" {
-		return fmt.Errorf("failed to find API key")
-	}
+	// Masterclass uses a fixed API key for media metadata requests
+	apiKey := "b9517f7d8d1f48c2de88100f2c13e77a9d8e524aed204651acca65202ff5c6cb9244c045795b1fafda617ac5eb0a6c50"
+	fmt.Printf("Using API key\n")
 
 	for _, chapter := range class.Chapters {
 		if chapterSlug != "" && chapter.Slug != chapterSlug {
 			continue
 		}
 		fmt.Printf("Downloading chapter %d: %s\n", chapter.Number, chapter.Title)
-		err := downloadChapter(client, datDir, outputDir, ytdlExec, chapter, apiKey)
+		err := downloadChapter(client, profile.UUID, outputDir, ytdlExec, chapter, apiKey)
 		if err != nil {
 			return err
 		}
@@ -749,30 +709,83 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 	return nil
 }
 
-func downloadChapter(client *http.Client, datDir string, outputDir string, ytdlExec string, chapter Chapter, apiKey string) error {
-	req, err := http.NewRequest("GET", "https://edge.masterclass.com/api/v1/media/metadata/"+chapter.MediaUUID, nil)
-	if err != nil {
-		return err
+func downloadChapter(client *http.Client, profileUUID string, outputDir string, ytdlExec string, chapter Chapter, apiKey string) error {
+	// Use CycleTLS for the media metadata API request to bypass any Cloudflare protection
+	cycleclient := cycletls.Init()
+	// Don't close cycleclient - it causes a panic and isn't necessary for short-lived processes
+
+	// Build cookie string from jar - try getting from www.masterclass.com
+	wwwURL, _ := url.Parse("https://www.masterclass.com")
+	edgeURL, _ := url.Parse("https://edge.masterclass.com")
+
+	// Get cookies from both URLs and merge them
+	wwwCookies := client.Jar.Cookies(wwwURL)
+	edgeCookies := client.Jar.Cookies(edgeURL)
+
+	fmt.Printf("Debug: www cookies: %d, edge cookies: %d\n", len(wwwCookies), len(edgeCookies))
+
+	// Build a map to collect unique cookies, preferring www cookies
+	cookieMap := make(map[string]string)
+	for _, c := range edgeCookies {
+		cookieMap[c.Name] = c.Value
 	}
-	req.Header.Set("Mc-Profile-Id", datDir)
-	req.Header.Set("X-Api-Key", apiKey)
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+	for _, c := range wwwCookies {
+		cookieMap[c.Name] = c.Value // Overwrite with www value if exists
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
+
+	var cookieStr string
+	first := true
+	for name, value := range cookieMap {
+		if !first {
+			cookieStr += "; "
 		}
-		print(string(body))
-		return fmt.Errorf("failed to get chapter metadata")
+		cookieStr += name + "=" + value
+		first = false
 	}
-	var chapterMetadata ChapterMetadataResponse
-	err = json.NewDecoder(resp.Body).Decode(&chapterMetadata)
+
+	// Debug: show what we're sending
+	fmt.Printf("Media metadata request:\n")
+	fmt.Printf("  URL: https://edge.masterclass.com/api/v1/media/metadata/%s\n", chapter.MediaUUID)
+	fmt.Printf("  Mc-Profile-Id: %s\n", profileUUID)
+	fmt.Printf("  X-Api-Key: %s\n", apiKey)
+	fmt.Printf("  Cookie header length: %d\n", len(cookieStr))
+
+	metadataResp, err := cycleclient.Do("https://edge.masterclass.com/api/v1/media/metadata/"+chapter.MediaUUID, cycletls.Options{
+		Body:      "",
+		Ja3:       ja3,
+		UserAgent: userAgent,
+		Headers: map[string]string{
+			"Accept":             "application/json",
+			"Accept-Language":    "en-US,en;q=0.9",
+			"Content-Type":       "application/json",
+			"Origin":             "https://www.masterclass.com",
+			"Referer":            "https://www.masterclass.com/",
+			"Mc-Profile-Id":      profileUUID,
+			"X-Api-Key":          apiKey,
+			"Cookie":             cookieStr,
+			"Sec-Fetch-Dest":     "empty",
+			"Sec-Fetch-Mode":     "cors",
+			"Sec-Fetch-Site":     "same-site",
+			"Sec-Ch-Ua":          `"Chromium";v="141", "Not?A_Brand";v="8"`,
+			"Sec-Ch-Ua-Mobile":   "?0",
+			"Sec-Ch-Ua-Platform": `"macOS"`,
+		},
+	}, "GET")
+
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to fetch metadata: %v", err)
+	}
+
+	if metadataResp.Status != 200 {
+		fmt.Printf("Response status: %d\n", metadataResp.Status)
+		fmt.Printf("Response body: %s\n", metadataResp.Body[:min(len(metadataResp.Body), 500)])
+		return fmt.Errorf("failed to get chapter metadata: status=%d", metadataResp.Status)
+	}
+
+	var chapterMetadata ChapterMetadataResponse
+	err = json.Unmarshal([]byte(metadataResp.Body), &chapterMetadata)
+	if err != nil {
+		return fmt.Errorf("failed to parse metadata: %v", err)
 	}
 
 	cmd := exec.Command(ytdlExec, "--embed-subs", "--all-subs", "-f", "bestvideo+bestaudio", chapterMetadata.Sources[0].Src, "-o", path.Join(outputDir, fmt.Sprintf("%03d-%s.mp4", chapter.Number, chapter.Title)))
