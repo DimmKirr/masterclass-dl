@@ -966,43 +966,40 @@ func downloadChapter(client *http.Client, profileUUID string, outputDir string, 
 	}
 	outputFile := path.Join(outputDir, baseFileName+".mp4")
 
-	// Build metadata arguments
-	var metadataArgs string
-	if nameAsSeries {
-		// Extract date (YYYY-MM-DD) from UpdatedAt
-		dateStr := ""
-		if chapter.UpdatedAt != "" && len(chapter.UpdatedAt) >= 10 {
-			dateStr = chapter.UpdatedAt[:10] // "2024-03-20T..." -> "2024-03-20"
-		}
-
-		// Get genre from first category
-		genre := "Education"
-		if len(course.Categories) > 0 {
-			genre = course.Categories[0].Name
-		}
-
-		// Generate episode_id
-		episodeID := fmt.Sprintf("s01e%02d", chapter.Number)
-
-		// Full metadata for series format
-		metadataArgs = fmt.Sprintf(
-			"ffmpeg:-metadata title=%q -metadata show=%q -metadata artist=%q -metadata genre=%q -metadata date=%q -metadata description=%q -metadata synopsis=%q -metadata season_number=1 -metadata episode_sort=%d -metadata episode_id=%q -metadata network=%q",
-			chapter.Title,
-			course.Title,
-			course.InstructorName,
-			genre,
-			dateStr,
-			chapter.Abstract,
-			course.Overview,
-			chapter.Number,
-			episodeID,
-			"MasterClass",
-		)
-	} else {
-		// Basic metadata (original behavior)
-		metadataArgs = fmt.Sprintf("ffmpeg:-metadata title=%q -metadata description=%q -metadata episode_sort=%d",
-			chapter.Title, chapter.Abstract, chapter.Number)
+	// Build metadata arguments - always embed full metadata regardless of naming mode
+	// Extract date (YYYY-MM-DD) from UpdatedAt
+	dateStr := ""
+	if chapter.UpdatedAt != "" && len(chapter.UpdatedAt) >= 10 {
+		dateStr = chapter.UpdatedAt[:10] // "2024-03-20T..." -> "2024-03-20"
 	}
+
+	// Build genre/tags from all categories
+	genre := "Education"
+	if len(course.Categories) > 0 {
+		var genres []string
+		for _, cat := range course.Categories {
+			genres = append(genres, cat.Name)
+		}
+		genre = strings.Join(genres, ", ")
+	}
+
+	// Generate episode_id
+	episodeID := fmt.Sprintf("s01e%02d", chapter.Number)
+
+	// Full metadata for all downloads
+	metadataArgs := fmt.Sprintf(
+		"ffmpeg:-metadata title=%q -metadata show=%q -metadata artist=%q -metadata genre=%q -metadata date=%q -metadata description=%q -metadata synopsis=%q -metadata season_number=1 -metadata episode_sort=%d -metadata episode_id=%q -metadata network=%q",
+		chapter.Title,
+		course.Title,
+		course.InstructorName,
+		genre,
+		dateStr,
+		chapter.Abstract,
+		course.Overview,
+		chapter.Number,
+		episodeID,
+		"MasterClass",
+	)
 
 	// Build yt-dlp command with metadata embedding
 	args := []string{
