@@ -71,10 +71,14 @@ masterclass-dl download -o ./downloads --limit 0 "https://www.masterclass.com/ho
 | `--pdfs` | `-p` | true | Download PDF workbooks |
 | `--posters` | | true | Download poster and fanart images |
 | `--ytdl-exec` | `-y` | yt-dlp | Path to yt-dlp/youtube-dl executable |
+| `--name-files-as-series` | | false | Name files in TV series format for Plex/Jellyfin |
 
 #### Examples
 
 ```bash
+# Download with Plex-friendly TV series naming (s01e01-Title.mp4)
+masterclass-dl download -o ./downloads --name-files-as-series "https://www.masterclass.com/classes/gordon-ramsay-teaches-cooking"
+
 # Download without PDFs
 masterclass-dl download -o ./downloads --pdfs=false "https://www.masterclass.com/classes/gordon-ramsay-teaches-cooking"
 
@@ -92,23 +96,44 @@ masterclass-dl download -o ./downloads -y /usr/local/bin/yt-dlp "https://www.mas
 
 Downloads are organized in a Plex/Jellyfin-friendly format:
 
+**Default naming:**
 ```
 downloads/
 ├── Gordon Ramsay Teaches Cooking/
-│   ├── poster.jpg              # 2x3 vertical artwork (for Plex/Jellyfin)
-│   ├── fanart.jpg              # 16x9 horizontal artwork (for backgrounds)
-│   ├── Class Guide.pdf         # Workbook/PDF materials
-│   ├── 001-Introduction.mp4    # Video with embedded subtitles
+│   ├── poster.jpg
+│   ├── fanart.jpg
+│   ├── Class Guide.pdf
+│   ├── 001-Introduction.mp4
 │   ├── 002-Knives.mp4
 │   └── ...
-└── Neil deGrasse Tyson.../
-    └── ...
+```
+
+**With `--name-files-as-series`:**
+```
+downloads/
+├── Gordon Ramsay Teaches Cooking/
+│   ├── poster.jpg
+│   ├── fanart.jpg
+│   ├── Class Guide.pdf
+│   ├── s01e01-Introduction.mp4
+│   ├── s01e02-Knives.mp4
+│   ├── s01e15-Closing-Extra_trailer.mp4  # Example lessons marked as extras
+│   └── ...
 ```
 
 **Video features:**
 - Embedded subtitles in 10+ languages (English, Spanish, French, German, Italian, Japanese, Chinese, Hindi, Polish, Portuguese)
 - Best available video/audio quality
 - Metadata embedded (title, description, episode number)
+
+**With `--name-files-as-series`, additional metadata:**
+- `show` - Series/course title
+- `artist` - Instructor name
+- `genre` - Category (e.g., "Arts & Entertainment")
+- `date` - Episode date
+- `episode_id` - s01e01 format
+- `network` - "MasterClass"
+- `synopsis` - Course overview
 
 ## Global Flags
 

@@ -55,6 +55,7 @@ func main() {
 	var downloadPosters bool
 	var ytdlExec string
 	var limit int
+	var nameAsSeries bool
 	var downloadCmd = &cobra.Command{
 		Use:     "download [class/chapter/category...]",
 		Aliases: []string{"dl"},
@@ -71,12 +72,12 @@ Supported URL formats:
 			for _, arg := range args {
 				// Check if this is a category/homepage URL
 				if strings.Contains(arg, "/homepage/") {
-					err := downloadCategory(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, limit, arg)
+					err := downloadCategory(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, limit, nameAsSeries, arg)
 					if err != nil {
 						fmt.Println(err)
 					}
 				} else {
-					err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, arg)
+					err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, arg)
 					if err != nil {
 						fmt.Println(err)
 					}
@@ -89,6 +90,7 @@ Supported URL formats:
 	downloadCmd.Flags().BoolVar(&downloadPosters, "posters", true, "Download poster and fanart images")
 	downloadCmd.Flags().StringVarP(&ytdlExec, "ytdl-exec", "y", "yt-dlp", "Path to the youtube-dl or yt-dlp executable")
 	downloadCmd.Flags().IntVarP(&limit, "limit", "l", 10, "Maximum number of classes to download from a category (0 for unlimited)")
+	downloadCmd.Flags().BoolVar(&nameAsSeries, "name-files-as-series", false, "Name files in TV series format (s01e01-Title.mp4)")
 	downloadCmd.MarkFlagRequired("output")
 
 	var loginCmd = &cobra.Command{
@@ -624,7 +626,7 @@ func loginStatus(client *http.Client, datDir string) error {
 	return nil
 }
 
-func download(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, arg string) error {
+func download(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, nameAsSeries bool, arg string) error {
 	if (client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil) {
 		return fmt.Errorf("cookies not found. Please login first")
 	}
@@ -734,7 +736,7 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 			continue
 		}
 		fmt.Printf("Downloading chapter %d: %s\n", chapter.Number, chapter.Title)
-		err := downloadChapter(client, profile.UUID, outputDir, ytdlExec, chapter, apiKey)
+		err := downloadChapter(client, profile.UUID, outputDir, ytdlExec, chapter, class, apiKey, nameAsSeries)
 		if err != nil {
 			return err
 		}
@@ -745,7 +747,7 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 	return nil
 }
 
-func downloadCategory(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, limit int, arg string) error {
+func downloadCategory(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, limit int, nameAsSeries bool, arg string) error {
 	if (client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil) {
 		return fmt.Errorf("cookies not found. Please login first")
 	}
@@ -858,7 +860,7 @@ func downloadCategory(client *http.Client, datDir string, outputDir string, down
 		fmt.Printf("\n[%d/%d] Downloading: %s\n", i+1, downloadCount, course.Title)
 		fmt.Println(strings.Repeat("=", 60))
 
-		err := download(client, datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, course.Slug)
+		err := download(client, datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, course.Slug)
 		if err != nil {
 			fmt.Printf("Error downloading %s: %v\n", course.Slug, err)
 			// Continue with next course instead of stopping
@@ -870,7 +872,7 @@ func downloadCategory(client *http.Client, datDir string, outputDir string, down
 	return nil
 }
 
-func downloadChapter(client *http.Client, profileUUID string, outputDir string, ytdlExec string, chapter Chapter, apiKey string) error {
+func downloadChapter(client *http.Client, profileUUID string, outputDir string, ytdlExec string, chapter Chapter, course CourseResponse, apiKey string, nameAsSeries bool) error {
 	// Use CycleTLS for the media metadata API request to bypass any Cloudflare protection
 	cycleclient := cycletls.Init()
 	// Don't close cycleclient - it causes a panic and isn't necessary for short-lived processes
@@ -949,17 +951,65 @@ func downloadChapter(client *http.Client, profileUUID string, outputDir string, 
 		return fmt.Errorf("failed to parse metadata: %v", err)
 	}
 
-	baseFileName := fmt.Sprintf("%03d-%s", chapter.Number, chapter.Title)
+	// Generate filename based on naming mode
+	var baseFileName string
+	if nameAsSeries {
+		// TV series format: s01e01-Title.mp4 or s01e01-Title-Extra_trailer.mp4
+		if chapter.IsExampleLesson {
+			baseFileName = fmt.Sprintf("s01e%02d-%s-Extra_trailer", chapter.Number, chapter.Title)
+		} else {
+			baseFileName = fmt.Sprintf("s01e%02d-%s", chapter.Number, chapter.Title)
+		}
+	} else {
+		// Default format: 001-Title.mp4
+		baseFileName = fmt.Sprintf("%03d-%s", chapter.Number, chapter.Title)
+	}
 	outputFile := path.Join(outputDir, baseFileName+".mp4")
+
+	// Build metadata arguments
+	var metadataArgs string
+	if nameAsSeries {
+		// Extract date (YYYY-MM-DD) from UpdatedAt
+		dateStr := ""
+		if chapter.UpdatedAt != "" && len(chapter.UpdatedAt) >= 10 {
+			dateStr = chapter.UpdatedAt[:10] // "2024-03-20T..." -> "2024-03-20"
+		}
+
+		// Get genre from first category
+		genre := "Education"
+		if len(course.Categories) > 0 {
+			genre = course.Categories[0].Name
+		}
+
+		// Generate episode_id
+		episodeID := fmt.Sprintf("s01e%02d", chapter.Number)
+
+		// Full metadata for series format
+		metadataArgs = fmt.Sprintf(
+			"ffmpeg:-metadata title=%q -metadata show=%q -metadata artist=%q -metadata genre=%q -metadata date=%q -metadata description=%q -metadata synopsis=%q -metadata season_number=1 -metadata episode_sort=%d -metadata episode_id=%q -metadata network=%q",
+			chapter.Title,
+			course.Title,
+			course.InstructorName,
+			genre,
+			dateStr,
+			chapter.Abstract,
+			course.Overview,
+			chapter.Number,
+			episodeID,
+			"MasterClass",
+		)
+	} else {
+		// Basic metadata (original behavior)
+		metadataArgs = fmt.Sprintf("ffmpeg:-metadata title=%q -metadata description=%q -metadata episode_sort=%d",
+			chapter.Title, chapter.Abstract, chapter.Number)
+	}
 
 	// Build yt-dlp command with metadata embedding
 	args := []string{
 		"--embed-subs", "--all-subs",
 		"--embed-metadata",
 		"-f", "bestvideo+bestaudio",
-		// Set metadata via ffmpeg postprocessor
-		"--postprocessor-args", fmt.Sprintf("ffmpeg:-metadata title=%q -metadata description=%q -metadata episode_sort=%d",
-			chapter.Title, chapter.Abstract, chapter.Number),
+		"--postprocessor-args", metadataArgs,
 		chapterMetadata.Sources[0].Src,
 		"-o", outputFile,
 	}
