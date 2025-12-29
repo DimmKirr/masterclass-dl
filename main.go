@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,6 +57,7 @@ func main() {
 	var ytdlExec string
 	var limit int
 	var nameAsSeries bool
+	var writeNfo bool
 	var downloadCmd = &cobra.Command{
 		Use:     "download [class/chapter/category...]",
 		Aliases: []string{"dl"},
@@ -72,12 +74,12 @@ Supported URL formats:
 			for _, arg := range args {
 				// Check if this is a category/homepage URL
 				if strings.Contains(arg, "/homepage/") {
-					err := downloadCategory(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, limit, nameAsSeries, arg)
+					err := downloadCategory(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, limit, nameAsSeries, writeNfo, arg)
 					if err != nil {
 						fmt.Println(err)
 					}
 				} else {
-					err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, arg)
+					err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, writeNfo, arg)
 					if err != nil {
 						fmt.Println(err)
 					}
@@ -91,6 +93,7 @@ Supported URL formats:
 	downloadCmd.Flags().StringVarP(&ytdlExec, "ytdl-exec", "y", "yt-dlp", "Path to the youtube-dl or yt-dlp executable")
 	downloadCmd.Flags().IntVarP(&limit, "limit", "l", 10, "Maximum number of classes to download from a category (0 for unlimited)")
 	downloadCmd.Flags().BoolVar(&nameAsSeries, "name-files-as-series", false, "Name files in TV series format (s01e01-Title.mp4)")
+	downloadCmd.Flags().BoolVar(&writeNfo, "write-nfo", false, "Write tvshow.nfo metadata file for Plex/Jellyfin")
 	downloadCmd.MarkFlagRequired("output")
 
 	var loginCmd = &cobra.Command{
@@ -626,7 +629,7 @@ func loginStatus(client *http.Client, datDir string) error {
 	return nil
 }
 
-func download(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, nameAsSeries bool, arg string) error {
+func download(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, nameAsSeries bool, writeNfo bool, arg string) error {
 	if (client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil) {
 		return fmt.Errorf("cookies not found. Please login first")
 	}
@@ -742,12 +745,21 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		}
 	}
 
+	// Write NFO metadata file
+	if writeNfo {
+		fmt.Println("Writing tvshow.nfo")
+		err = writeNFO(class, outputDir)
+		if err != nil {
+			fmt.Printf("Warning: failed to write NFO: %v\n", err)
+		}
+	}
+
 	fmt.Println("Done")
 
 	return nil
 }
 
-func downloadCategory(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, limit int, nameAsSeries bool, arg string) error {
+func downloadCategory(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, limit int, nameAsSeries bool, writeNfo bool, arg string) error {
 	if (client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil) {
 		return fmt.Errorf("cookies not found. Please login first")
 	}
@@ -860,7 +872,7 @@ func downloadCategory(client *http.Client, datDir string, outputDir string, down
 		fmt.Printf("\n[%d/%d] Downloading: %s\n", i+1, downloadCount, course.Title)
 		fmt.Println(strings.Repeat("=", 60))
 
-		err := download(client, datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, course.Slug)
+		err := download(client, datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, writeNfo, course.Slug)
 		if err != nil {
 			fmt.Printf("Error downloading %s: %v\n", course.Slug, err)
 			// Continue with next course instead of stopping
@@ -1041,4 +1053,99 @@ func downloadImage(client *http.Client, imageURL string, outputPath string) erro
 
 	_, err = io.Copy(file, resp.Body)
 	return err
+}
+
+// NFO XML structures for Kodi/Plex/Jellyfin compatibility
+type TVShowNFO struct {
+	XMLName   xml.Name    `xml:"tvshow"`
+	Title     string      `xml:"title"`
+	Plot      string      `xml:"plot"`
+	Outline   string      `xml:"outline,omitempty"`
+	Tagline   string      `xml:"tagline,omitempty"`
+	Genres    []string    `xml:"genre"`
+	Tags      []string    `xml:"tag,omitempty"`
+	Studio    string      `xml:"studio"`
+	Premiered string      `xml:"premiered,omitempty"`
+	Runtime   int         `xml:"runtime,omitempty"`
+	Actors    []NFOActor  `xml:"actor"`
+	Thumbs    []NFOThumb  `xml:"thumb"`
+	UniqueID  NFOUniqueID `xml:"uniqueid"`
+}
+
+type NFOActor struct {
+	Name  string `xml:"name"`
+	Role  string `xml:"role"`
+	Thumb string `xml:"thumb,omitempty"`
+}
+
+type NFOThumb struct {
+	Aspect string `xml:"aspect,attr"`
+	Value  string `xml:",chardata"`
+}
+
+type NFOUniqueID struct {
+	Type    string `xml:"type,attr"`
+	Default bool   `xml:"default,attr"`
+	Value   string `xml:",chardata"`
+}
+
+func writeNFO(course CourseResponse, outputDir string) error {
+	nfoPath := path.Join(outputDir, "tvshow.nfo")
+
+	// Extract premiered date (YYYY-MM-DD) from UpdatedAt
+	premiered := ""
+	if course.UpdatedAt != "" && len(course.UpdatedAt) >= 10 {
+		premiered = course.UpdatedAt[:10]
+	}
+
+	// Build genres from categories
+	var genres []string
+	for _, cat := range course.Categories {
+		genres = append(genres, cat.Name)
+	}
+
+	// Build tags
+	var tags []string
+	if course.Skill != "" {
+		tags = append(tags, course.Skill)
+	}
+
+	// Build the NFO struct
+	nfo := TVShowNFO{
+		Title:     course.Title,
+		Plot:      course.Overview,
+		Outline:   course.ShortOverview,
+		Tagline:   course.InstructorTagline,
+		Genres:    genres,
+		Tags:      tags,
+		Studio:    "MasterClass",
+		Premiered: premiered,
+		Runtime:   course.TotalSeconds / 60,
+		Actors: []NFOActor{
+			{
+				Name: course.InstructorName,
+				Role: "Instructor",
+			},
+		},
+		Thumbs: []NFOThumb{
+			{Aspect: "poster", Value: "poster.jpg"},
+			{Aspect: "fanart", Value: "fanart.jpg"},
+		},
+		UniqueID: NFOUniqueID{
+			Type:    "masterclass",
+			Default: true,
+			Value:   course.Slug,
+		},
+	}
+
+	// Marshal to XML with indentation
+	output, err := xml.MarshalIndent(nfo, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal NFO: %v", err)
+	}
+
+	// Add XML declaration
+	xmlContent := []byte(xml.Header + string(output) + "\n")
+
+	return os.WriteFile(nfoPath, xmlContent, 0644)
 }
