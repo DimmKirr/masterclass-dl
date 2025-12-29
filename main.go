@@ -54,17 +54,32 @@ func main() {
 	var downloadPdfs bool
 	var downloadPosters bool
 	var ytdlExec string
+	var limit int
 	var downloadCmd = &cobra.Command{
-		Use:     "download [class/chapter...]",
+		Use:     "download [class/chapter/category...]",
 		Aliases: []string{"dl"},
-		Short:   "Download a class or chapter from masterclass.com",
-		Long:    "Download a class or chapter from masterclass.com. You can either specify a url or just the id. You can specify multiple URLs to download multiple at once.",
-		Args:    cobra.MatchAll(cobra.MinimumNArgs(1)),
+		Short:   "Download a class, chapter, or category from masterclass.com",
+		Long: `Download a class, chapter, or category from masterclass.com.
+You can either specify a url or just the id. You can specify multiple URLs to download multiple at once.
+
+Supported URL formats:
+  - Class:    https://www.masterclass.com/classes/gordon-ramsay-teaches-cooking
+  - Chapter:  https://www.masterclass.com/classes/gordon-ramsay-teaches-cooking/chapters/introduction
+  - Category: https://www.masterclass.com/homepage/science-and-tech`,
+		Args: cobra.MatchAll(cobra.MinimumNArgs(1)),
 		Run: func(cmd *cobra.Command, args []string) {
 			for _, arg := range args {
-				err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, arg)
-				if err != nil {
-					fmt.Println(err)
+				// Check if this is a category/homepage URL
+				if strings.Contains(arg, "/homepage/") {
+					err := downloadCategory(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, limit, arg)
+					if err != nil {
+						fmt.Println(err)
+					}
+				} else {
+					err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, arg)
+					if err != nil {
+						fmt.Println(err)
+					}
 				}
 			}
 		},
@@ -73,6 +88,7 @@ func main() {
 	downloadCmd.Flags().BoolVarP(&downloadPdfs, "pdfs", "p", true, "Download PDFs")
 	downloadCmd.Flags().BoolVar(&downloadPosters, "posters", true, "Download poster and fanart images")
 	downloadCmd.Flags().StringVarP(&ytdlExec, "ytdl-exec", "y", "yt-dlp", "Path to the youtube-dl or yt-dlp executable")
+	downloadCmd.Flags().IntVarP(&limit, "limit", "l", 10, "Maximum number of classes to download from a category (0 for unlimited)")
 	downloadCmd.MarkFlagRequired("output")
 
 	var loginCmd = &cobra.Command{
@@ -726,6 +742,131 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 
 	fmt.Println("Done")
 
+	return nil
+}
+
+func downloadCategory(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, limit int, arg string) error {
+	if (client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil) {
+		return fmt.Errorf("cookies not found. Please login first")
+	}
+
+	profile, err := getProfile(client, datDir)
+	if err != nil {
+		return err
+	}
+
+	// Parse the category URL to extract bundle name
+	// Input: https://www.masterclass.com/homepage/science-and-tech
+	// Bundle: homepage-science-and-tech
+	categorySlug := arg
+	categorySlug = strings.TrimPrefix(categorySlug, "https://www.masterclass.com/")
+	categorySlug = strings.TrimPrefix(categorySlug, "http://www.masterclass.com/")
+	categorySlug = strings.TrimSuffix(categorySlug, "/")
+
+	// Convert path to bundle format: homepage/science-and-tech -> homepage-science-and-tech
+	bundle := strings.ReplaceAll(categorySlug, "/", "-")
+
+	fmt.Printf("Fetching category: %s (bundle: %s)\n", categorySlug, bundle)
+
+	// Call the content-rows API
+	apiURL := fmt.Sprintf("https://www.masterclass.com/jsonapi/v3/content-rows?filter[platform]=web&filter[bundle]=%s&include_items=true", bundle)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Referer", "https://www.masterclass.com/"+categorySlug)
+	req.Header.Set("Mc-Profile-Id", profile.UUID)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to get category info: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	var contentRows ContentRowsResponse
+	err = json.NewDecoder(resp.Body).Decode(&contentRows)
+	if err != nil {
+		return fmt.Errorf("failed to parse content rows: %v", err)
+	}
+
+	// Extract all unique courses from all rows
+	type CourseInfo struct {
+		Slug     string
+		Title    string
+		Subtitle string
+		Duration string
+	}
+	courseMap := make(map[string]CourseInfo)
+	for _, row := range contentRows {
+		for _, item := range row.Items {
+			// Only include courses (not series or other content types)
+			resource := item.Default.Resource
+			if resource.EntitySlug != "" && resource.EntityType == "course" {
+				courseMap[resource.EntitySlug] = CourseInfo{
+					Slug:     resource.EntitySlug,
+					Title:    item.Default.Title,
+					Subtitle: item.Default.Subtitle,
+					Duration: item.Default.Duration,
+				}
+			}
+		}
+	}
+
+	// Convert to slice
+	var courses []CourseInfo
+	for _, info := range courseMap {
+		courses = append(courses, info)
+	}
+
+	fmt.Printf("\nFound %d courses in category '%s':\n", len(courses), categorySlug)
+	fmt.Println(strings.Repeat("-", 60))
+
+	// Print all courses
+	for i, course := range courses {
+		duration := ""
+		if course.Duration != "" {
+			duration = fmt.Sprintf(" (%s)", course.Duration)
+		}
+		subtitle := ""
+		if course.Subtitle != "" {
+			subtitle = fmt.Sprintf(" - %s", course.Subtitle)
+		}
+		fmt.Printf("%3d. %s%s%s\n", i+1, course.Title, subtitle, duration)
+	}
+	fmt.Println(strings.Repeat("-", 60))
+
+	// Apply limit
+	downloadCount := len(courses)
+	if limit > 0 && limit < downloadCount {
+		downloadCount = limit
+		fmt.Printf("\nDownloading first %d of %d courses (use --limit 0 for all):\n\n", downloadCount, len(courses))
+	} else {
+		fmt.Printf("\nDownloading all %d courses:\n\n", downloadCount)
+	}
+
+	// Download each course
+	for i := 0; i < downloadCount; i++ {
+		course := courses[i]
+		fmt.Printf("\n[%d/%d] Downloading: %s\n", i+1, downloadCount, course.Title)
+		fmt.Println(strings.Repeat("=", 60))
+
+		err := download(client, datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, course.Slug)
+		if err != nil {
+			fmt.Printf("Error downloading %s: %v\n", course.Slug, err)
+			// Continue with next course instead of stopping
+			continue
+		}
+	}
+
+	fmt.Printf("\n\nCategory download complete! Downloaded %d courses.\n", downloadCount)
 	return nil
 }
 

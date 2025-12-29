@@ -412,3 +412,50 @@ type ChapterMetadataResponse struct {
 		MimeType string `json:"mime_type"`
 	} `json:"text_tracks"`
 }
+
+// ContentRowsResponse represents the response from /jsonapi/v3/content-rows
+type ContentRowsResponse []ContentRow
+
+type ContentRow struct {
+	ID    int           `json:"id"`
+	Slug  string        `json:"slug"`
+	UUID  string        `json:"uuid"`
+	Items []ContentItem `json:"items"`
+}
+
+type ContentItem struct {
+	TileType string             `json:"tile_type"`
+	ItemUUID string             `json:"item_uuid"`
+	Default  ContentItemDefault `json:"default"`
+}
+
+type ContentItemDefault struct {
+	TileType        string              `json:"tile_type"`
+	Title           string              `json:"title"`
+	Subtitle        string              `json:"subtitle"`
+	Caption         string              `json:"caption"`
+	Duration        string              `json:"duration"`
+	Images          ContentItemImages   `json:"images"`
+	Resource        ContentItemResource `json:"resource"`
+	TileRedirect    string              `json:"tile_click_redirect"`
+	TopRightPill    *ContentItemPill    `json:"top_right_pill"`
+	BottomRightPill *ContentItemPill    `json:"bottom_right_pill"`
+}
+
+type ContentItemImages struct {
+	Primary16x9 string `json:"primary_16x9"`
+	Primary2x3  string `json:"primary_2x3"`
+	Primary1x1  string `json:"primary_1x1"`
+}
+
+type ContentItemResource struct {
+	EntityType string `json:"entity_type"`
+	EntityID   int    `json:"entity_id"`
+	EntitySlug string `json:"entity_slug"`
+	EntityUUID string `json:"entity_uuid"`
+}
+
+type ContentItemPill struct {
+	Text string `json:"text"`
+	Kind string `json:"kind"`
+}
