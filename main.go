@@ -52,6 +52,7 @@ func main() {
 
 	var outputDir string
 	var downloadPdfs bool
+	var downloadPosters bool
 	var ytdlExec string
 	var downloadCmd = &cobra.Command{
 		Use:     "download [class/chapter...]",
@@ -61,7 +62,7 @@ func main() {
 		Args:    cobra.MatchAll(cobra.MinimumNArgs(1)),
 		Run: func(cmd *cobra.Command, args []string) {
 			for _, arg := range args {
-				err := download(getClient(datDir), datDir, outputDir, downloadPdfs, ytdlExec, arg)
+				err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, arg)
 				if err != nil {
 					fmt.Println(err)
 				}
@@ -70,6 +71,7 @@ func main() {
 	}
 	downloadCmd.Flags().StringVarP(&outputDir, "output", "o", "", "Output directory")
 	downloadCmd.Flags().BoolVarP(&downloadPdfs, "pdfs", "p", true, "Download PDFs")
+	downloadCmd.Flags().BoolVar(&downloadPosters, "posters", true, "Download poster and fanart images")
 	downloadCmd.Flags().StringVarP(&ytdlExec, "ytdl-exec", "y", "yt-dlp", "Path to the youtube-dl or yt-dlp executable")
 	downloadCmd.MarkFlagRequired("output")
 
@@ -606,7 +608,7 @@ func loginStatus(client *http.Client, datDir string) error {
 	return nil
 }
 
-func download(client *http.Client, datDir string, outputDir string, downloadPdfs bool, ytdlExec string, arg string) error {
+func download(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, arg string) error {
 	if (client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil) {
 		return fmt.Errorf("cookies not found. Please login first")
 	}
@@ -658,6 +660,24 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 	err = os.MkdirAll(outputDir, 0755)
 	if err != nil {
 		return err
+	}
+
+	// Download show artwork (Plex naming convention)
+	if downloadPosters {
+		if class.Primary2x3 != "" {
+			fmt.Println("Downloading poster image")
+			err = downloadImage(client, class.Primary2x3, path.Join(outputDir, "poster.jpg"))
+			if err != nil {
+				fmt.Printf("Warning: failed to download poster: %v\n", err)
+			}
+		}
+		if class.Primary16x9 != "" {
+			fmt.Println("Downloading fanart image")
+			err = downloadImage(client, class.Primary16x9, path.Join(outputDir, "fanart.jpg"))
+			if err != nil {
+				fmt.Printf("Warning: failed to download fanart: %v\n", err)
+			}
+		}
 	}
 
 	if downloadPdfs {
@@ -788,11 +808,49 @@ func downloadChapter(client *http.Client, profileUUID string, outputDir string, 
 		return fmt.Errorf("failed to parse metadata: %v", err)
 	}
 
-	cmd := exec.Command(ytdlExec, "--embed-subs", "--all-subs", "-f", "bestvideo+bestaudio", chapterMetadata.Sources[0].Src, "-o", path.Join(outputDir, fmt.Sprintf("%03d-%s.mp4", chapter.Number, chapter.Title)))
+	baseFileName := fmt.Sprintf("%03d-%s", chapter.Number, chapter.Title)
+	outputFile := path.Join(outputDir, baseFileName+".mp4")
+
+	// Build yt-dlp command with metadata embedding
+	args := []string{
+		"--embed-subs", "--all-subs",
+		"--embed-metadata",
+		"-f", "bestvideo+bestaudio",
+		// Set metadata via ffmpeg postprocessor
+		"--postprocessor-args", fmt.Sprintf("ffmpeg:-metadata title=%q -metadata description=%q -metadata episode_sort=%d",
+			chapter.Title, chapter.Abstract, chapter.Number),
+		chapterMetadata.Sources[0].Src,
+		"-o", outputFile,
+	}
+
+	cmd := exec.Command(ytdlExec, args...)
+	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err = cmd.Run()
 	if err != nil {
 		return err
 	}
+
 	return nil
+}
+
+func downloadImage(client *http.Client, imageURL string, outputPath string) error {
+	resp, err := client.Get(imageURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("failed to download image: status=%d", resp.StatusCode)
+	}
+
+	file, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = io.Copy(file, resp.Body)
+	return err
 }
