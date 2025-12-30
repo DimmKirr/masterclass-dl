@@ -1505,7 +1505,7 @@ type EpisodeNFO struct {
 	Plot      string      `xml:"plot"`
 	Aired     string      `xml:"aired,omitempty"`
 	Runtime   int         `xml:"runtime,omitempty"`
-	Director  string      `xml:"director,omitempty"`
+	Actors    []NFOActor  `xml:"actor"`
 	Studio    string      `xml:"studio,omitempty"`
 	UniqueID  NFOUniqueID `xml:"uniqueid"`
 }
@@ -1691,6 +1691,51 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 		runtime = chapter.DurationSecs / 60
 	}
 
+	// Build actors list with portraits (same logic as tvshow.nfo)
+	var actors []NFOActor
+	hasValidInstructors := false
+	if len(course.Instructors) > 0 && course.Instructors[0].Name != "" {
+		hasValidInstructors = true
+		for _, inst := range course.Instructors {
+			actor := NFOActor{
+				Name: inst.Name,
+				Role: "Instructor",
+			}
+			// Add bio if available
+			if inst.Bio != nil {
+				if bio, ok := inst.Bio.(string); ok && bio != "" {
+					actor.Bio = bio
+				}
+			}
+			// Add headshot URL
+			if inst.HeadshotURL != nil {
+				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
+					actor.Thumb = headshot + "?width=500&height=500&fit=cover&dpr=2"
+				}
+			}
+			// Fallback to poster image if no headshot
+			if actor.Thumb == "" && course.Primary2x3 != "" {
+				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+			}
+			actors = append(actors, actor)
+		}
+	}
+	if !hasValidInstructors {
+		// Fallback: split instructor_name string
+		instructorNames := splitInstructorNames(course.InstructorName)
+		for _, name := range instructorNames {
+			actor := NFOActor{
+				Name: name,
+				Role: "Instructor",
+			}
+			// Use poster as fallback for actor thumb
+			if course.Primary2x3 != "" {
+				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+			}
+			actors = append(actors, actor)
+		}
+	}
+
 	nfo := EpisodeNFO{
 		Title:     chapter.Title,
 		ShowTitle: course.Title,
@@ -1699,7 +1744,7 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 		Plot:      chapter.Abstract,
 		Aired:     aired,
 		Runtime:   runtime,
-		Director:  course.InstructorName,
+		Actors:    actors,
 		Studio:    "MasterClass",
 		UniqueID: NFOUniqueID{
 			Type:    "masterclass",
