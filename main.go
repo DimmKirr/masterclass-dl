@@ -929,8 +929,10 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 	}
 
 	classSlug = strings.TrimPrefix(classSlug, "https://www.masterclass.com/classes/")
+	classSlug = strings.TrimPrefix(classSlug, "https://www.masterclass.com/series/")
 	classSlug = strings.TrimSuffix(classSlug, "/")
 	chapterSlug = strings.TrimPrefix(chapterSlug, "https://www.masterclass.com/classes/")
+	chapterSlug = strings.TrimPrefix(chapterSlug, "https://www.masterclass.com/series/")
 	chapterSlug = strings.TrimSuffix(chapterSlug, "/")
 	if classSlug == "" {
 		return fmt.Errorf("invalid class slug")
