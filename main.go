@@ -1621,8 +1621,17 @@ func writeNFO(course CourseResponse, outputDir string) error {
 					actor.Bio = bio
 				}
 			}
-			// Use local portrait filename in .actors/ folder (Kodi/Plex standard)
-			actor.Thumb = ".actors/" + actorFilename(inst.Name) + ".jpg"
+			// Use headshot URL for actor thumb (Plex link mode)
+			// Local files are also saved to .actors/ for Kodi/local mode users
+			if inst.HeadshotURL != nil {
+				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
+					actor.Thumb = headshot + "?width=500&height=500&fit=cover&dpr=2"
+				}
+			}
+			// Fallback to poster if no headshot
+			if actor.Thumb == "" && course.Primary2x3 != "" {
+				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+			}
 			actors = append(actors, actor)
 		}
 	}
@@ -1634,8 +1643,10 @@ func writeNFO(course CourseResponse, outputDir string) error {
 				Name: name,
 				Role: "Instructor",
 			}
-			// Use local portrait filename in .actors/ folder
-			actor.Thumb = ".actors/" + actorFilename(name) + ".jpg"
+			// Use poster as fallback thumb URL
+			if course.Primary2x3 != "" {
+				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+			}
 			actors = append(actors, actor)
 		}
 	}
@@ -1707,8 +1718,16 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 					actor.Bio = bio
 				}
 			}
-			// Use local portrait filename in .actors/ folder (Kodi/Plex standard)
-			actor.Thumb = ".actors/" + actorFilename(inst.Name) + ".jpg"
+			// Use headshot URL for actor thumb (Plex link mode)
+			if inst.HeadshotURL != nil {
+				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
+					actor.Thumb = headshot + "?width=500&height=500&fit=cover&dpr=2"
+				}
+			}
+			// Fallback to poster if no headshot
+			if actor.Thumb == "" && course.Primary2x3 != "" {
+				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+			}
 			actors = append(actors, actor)
 		}
 	}
@@ -1720,8 +1739,10 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 				Name: name,
 				Role: "Instructor",
 			}
-			// Use local portrait filename in .actors/ folder
-			actor.Thumb = ".actors/" + actorFilename(name) + ".jpg"
+			// Use poster as fallback thumb URL
+			if course.Primary2x3 != "" {
+				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+			}
 			actors = append(actors, actor)
 		}
 	}

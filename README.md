@@ -22,7 +22,7 @@ Download the executable from the [releases](https://github.com/RythenGlyth/maste
 Or build from source:
 ```bash
 go build -o masterclass-dl .
-```˚
+```
 
 ## Usage
 
