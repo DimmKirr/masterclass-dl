@@ -1611,16 +1611,8 @@ func writeNFO(course CourseResponse, outputDir string) error {
 					actor.Bio = bio
 				}
 			}
-			// Add headshot URL (Plex/Kodi need full URL, not local filename)
-			if inst.HeadshotURL != nil {
-				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
-					actor.Thumb = headshot + "?width=500&height=500&fit=cover&dpr=2"
-				}
-			}
-			// Fallback to poster image if no headshot
-			if actor.Thumb == "" && course.Primary2x3 != "" {
-				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
-			}
+			// Use local portrait filename (downloaded alongside NFO)
+			actor.Thumb = sanitizeFilename(inst.Name) + ".jpg"
 			actors = append(actors, actor)
 		}
 	}
@@ -1632,10 +1624,8 @@ func writeNFO(course CourseResponse, outputDir string) error {
 				Name: name,
 				Role: "Instructor",
 			}
-			// Use poster as fallback for actor thumb
-			if course.Primary2x3 != "" {
-				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
-			}
+			// Use local portrait filename
+			actor.Thumb = sanitizeFilename(name) + ".jpg"
 			actors = append(actors, actor)
 		}
 	}
@@ -1707,16 +1697,8 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 					actor.Bio = bio
 				}
 			}
-			// Add headshot URL
-			if inst.HeadshotURL != nil {
-				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
-					actor.Thumb = headshot + "?width=500&height=500&fit=cover&dpr=2"
-				}
-			}
-			// Fallback to poster image if no headshot
-			if actor.Thumb == "" && course.Primary2x3 != "" {
-				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
-			}
+			// Use local portrait filename (downloaded alongside NFO)
+			actor.Thumb = sanitizeFilename(inst.Name) + ".jpg"
 			actors = append(actors, actor)
 		}
 	}
@@ -1728,10 +1710,8 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 				Name: name,
 				Role: "Instructor",
 			}
-			// Use poster as fallback for actor thumb
-			if course.Primary2x3 != "" {
-				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
-			}
+			// Use local portrait filename
+			actor.Thumb = sanitizeFilename(name) + ".jpg"
 			actors = append(actors, actor)
 		}
 	}
