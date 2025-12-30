@@ -982,31 +982,6 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 				fmt.Printf("Warning: failed to download fanart: %v\n", err)
 			}
 		}
-		// Download instructor portraits to .actors/ folder (Kodi/Plex standard)
-		actorsDir := path.Join(outputDir, ".actors")
-		os.MkdirAll(actorsDir, 0755)
-		for _, inst := range class.Instructors {
-			if inst.Name != "" {
-				var portraitURL string
-				if inst.HeadshotURL != nil {
-					if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
-						portraitURL = headshot + "?width=500&height=500&fit=cover&dpr=2"
-					}
-				}
-				// Fallback to poster image if no headshot
-				if portraitURL == "" && class.Primary2x3 != "" {
-					portraitURL = class.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
-				}
-				if portraitURL != "" {
-					filename := actorFilename(inst.Name) + ".jpg"
-					fmt.Printf("Downloading portrait: %s\n", inst.Name)
-					err = downloadImage(client, portraitURL, path.Join(actorsDir, filename))
-					if err != nil {
-						fmt.Printf("Warning: failed to download portrait for %s: %v\n", inst.Name, err)
-					}
-				}
-			}
-		}
 	}
 
 	if downloadPdfs && !metadataOnly {
@@ -1441,14 +1416,6 @@ func sanitizeFilename(name string) string {
 	return replacer.Replace(name)
 }
 
-// actorFilename converts actor name to .actors/ folder format (spaces → underscores)
-// This matches XBMCnfoTVImporter.bundle expectations
-func actorFilename(name string) string {
-	// First sanitize, then replace spaces with underscores
-	sanitized := sanitizeFilename(name)
-	return strings.ReplaceAll(sanitized, " ", "_")
-}
-
 func downloadImage(client *http.Client, imageURL string, outputPath string) error {
 	resp, err := client.Get(imageURL)
 	if err != nil {
@@ -1626,8 +1593,7 @@ func writeNFO(course CourseResponse, outputDir string) error {
 					actor.Bio = bio
 				}
 			}
-			// Use headshot URL for actor thumb (Plex link mode)
-			// Local files are also saved to .actors/ for Kodi/local mode users
+			// Use headshot URL for actor thumb
 			if inst.HeadshotURL != nil {
 				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
 					actor.Thumb = headshot + "?width=500&height=500&fit=cover&dpr=2"
