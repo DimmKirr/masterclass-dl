@@ -59,6 +59,7 @@ func main() {
 	var limit int
 	var nameAsSeries bool
 	var writeNfo bool
+	var metadataOnly bool
 	var downloadCmd = &cobra.Command{
 		Use:     "download [class/chapter/category...]",
 		Aliases: []string{"dl"},
@@ -73,13 +74,16 @@ Supported URL formats:
 		Args: cobra.MatchAll(cobra.MinimumNArgs(1)),
 		Run: func(cmd *cobra.Command, args []string) {
 			// Log enabled options
-			if writeNfo {
+			if metadataOnly {
+				fmt.Println("--metadata-only specified, downloading poster, fanart, and NFO only (no videos)")
+			}
+			if writeNfo && !metadataOnly {
 				fmt.Println("--write-nfo specified, will write tvshow.nfo file")
 			}
 			if nameAsSeries {
 				fmt.Println("--name-files-as-series specified, will use s01e01 naming format")
 			}
-			if !downloadPdfs {
+			if !downloadPdfs && !metadataOnly {
 				fmt.Println("--pdfs=false specified, skipping PDF downloads")
 			}
 			if !downloadPosters {
@@ -93,12 +97,12 @@ Supported URL formats:
 			for _, arg := range args {
 				// Check if this is a category/homepage URL
 				if strings.Contains(arg, "/homepage/") {
-					err := downloadCategory(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, limit, nameAsSeries, writeNfo, arg)
+					err := downloadCategory(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, limit, nameAsSeries, writeNfo, metadataOnly, arg)
 					if err != nil {
 						fmt.Println(err)
 					}
 				} else {
-					err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, writeNfo, arg)
+					err := download(getClient(datDir), datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, writeNfo, metadataOnly, arg)
 					if err != nil {
 						fmt.Println(err)
 					}
@@ -113,6 +117,7 @@ Supported URL formats:
 	downloadCmd.Flags().IntVarP(&limit, "limit", "l", 10, "Maximum number of classes to download from a category (0 for unlimited)")
 	downloadCmd.Flags().BoolVar(&nameAsSeries, "name-files-as-series", false, "Name files in TV series format (s01e01-Title.mp4)")
 	downloadCmd.Flags().BoolVar(&writeNfo, "write-nfo", false, "Write tvshow.nfo metadata file for Plex/Jellyfin")
+	downloadCmd.Flags().BoolVar(&metadataOnly, "metadata-only", false, "Download only metadata (poster, fanart, NFO) - no videos or PDFs")
 	downloadCmd.MarkFlagRequired("output")
 
 	var loginCmd = &cobra.Command{
@@ -904,7 +909,7 @@ func showCategoryMetadata(client *http.Client, profileUUID string, jsonOutput bo
 	return nil
 }
 
-func download(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, nameAsSeries bool, writeNfo bool, arg string) error {
+func download(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, nameAsSeries bool, writeNfo bool, metadataOnly bool, arg string) error {
 	if (client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil) {
 		return fmt.Errorf("cookies not found. Please login first")
 	}
@@ -976,7 +981,7 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		}
 	}
 
-	if downloadPdfs {
+	if downloadPdfs && !metadataOnly {
 		fmt.Println("Downloading PDFs")
 		for _, pdf := range class.AllPDFs {
 			req, err := http.NewRequest("GET", pdf.URL, nil)
@@ -1005,23 +1010,26 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		}
 	}
 
-	// Masterclass uses a fixed API key for media metadata requests
-	apiKey := "b9517f7d8d1f48c2de88100f2c13e77a9d8e524aed204651acca65202ff5c6cb9244c045795b1fafda617ac5eb0a6c50"
-	fmt.Printf("Using API key\n")
+	// Download videos (skip if metadataOnly)
+	if !metadataOnly {
+		// Masterclass uses a fixed API key for media metadata requests
+		apiKey := "b9517f7d8d1f48c2de88100f2c13e77a9d8e524aed204651acca65202ff5c6cb9244c045795b1fafda617ac5eb0a6c50"
+		fmt.Printf("Using API key\n")
 
-	for _, chapter := range class.Chapters {
-		if chapterSlug != "" && chapter.Slug != chapterSlug {
-			continue
-		}
-		fmt.Printf("Downloading chapter %d: %s\n", chapter.Number, chapter.Title)
-		err := downloadChapter(client, profile.UUID, outputDir, ytdlExec, chapter, class, apiKey, nameAsSeries)
-		if err != nil {
-			return err
+		for _, chapter := range class.Chapters {
+			if chapterSlug != "" && chapter.Slug != chapterSlug {
+				continue
+			}
+			fmt.Printf("Downloading chapter %d: %s\n", chapter.Number, chapter.Title)
+			err := downloadChapter(client, profile.UUID, outputDir, ytdlExec, chapter, class, apiKey, nameAsSeries)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	// Write NFO metadata file
-	if writeNfo {
+	// Write NFO metadata file (always write if metadataOnly, otherwise respect writeNfo flag)
+	if writeNfo || metadataOnly {
 		fmt.Println("Writing tvshow.nfo")
 		err = writeNFO(class, outputDir)
 		if err != nil {
@@ -1034,7 +1042,7 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 	return nil
 }
 
-func downloadCategory(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, limit int, nameAsSeries bool, writeNfo bool, arg string) error {
+func downloadCategory(client *http.Client, datDir string, outputDir string, downloadPdfs bool, downloadPosters bool, ytdlExec string, limit int, nameAsSeries bool, writeNfo bool, metadataOnly bool, arg string) error {
 	if (client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil) {
 		return fmt.Errorf("cookies not found. Please login first")
 	}
@@ -1147,7 +1155,7 @@ func downloadCategory(client *http.Client, datDir string, outputDir string, down
 		fmt.Printf("\n[%d/%d] Downloading: %s\n", i+1, downloadCount, course.Title)
 		fmt.Println(strings.Repeat("=", 60))
 
-		err := download(client, datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, writeNfo, course.Slug)
+		err := download(client, datDir, outputDir, downloadPdfs, downloadPosters, ytdlExec, nameAsSeries, writeNfo, metadataOnly, course.Slug)
 		if err != nil {
 			fmt.Printf("Error downloading %s: %v\n", course.Slug, err)
 			// Continue with next course instead of stopping
