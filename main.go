@@ -982,6 +982,19 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 				fmt.Printf("Warning: failed to download fanart: %v\n", err)
 			}
 		}
+		// Download instructor portraits
+		for _, inst := range class.Instructors {
+			if inst.Name != "" && inst.HeadshotURL != nil {
+				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
+					filename := sanitizeFilename(inst.Name) + ".jpg"
+					fmt.Printf("Downloading portrait: %s\n", inst.Name)
+					err = downloadImage(client, headshot, path.Join(outputDir, filename))
+					if err != nil {
+						fmt.Printf("Warning: failed to download portrait for %s: %v\n", inst.Name, err)
+					}
+				}
+			}
+		}
 	}
 
 	if downloadPdfs && !metadataOnly {
@@ -1361,6 +1374,23 @@ func downloadChapter(client *http.Client, profileUUID string, outputDir string, 
 	return nil
 }
 
+// sanitizeFilename removes or replaces characters that are invalid in filenames
+func sanitizeFilename(name string) string {
+	// Replace problematic characters
+	replacer := strings.NewReplacer(
+		"/", "-",
+		"\\", "-",
+		":", "-",
+		"*", "",
+		"?", "",
+		"\"", "",
+		"<", "",
+		">", "",
+		"|", "",
+	)
+	return replacer.Replace(name)
+}
+
 func downloadImage(client *http.Client, imageURL string, outputPath string) error {
 	resp, err := client.Get(imageURL)
 	if err != nil {
@@ -1403,6 +1433,7 @@ type NFOActor struct {
 	Name  string `xml:"name"`
 	Role  string `xml:"role"`
 	Thumb string `xml:"thumb,omitempty"`
+	Bio   string `xml:"biography,omitempty"`
 }
 
 type NFOThumb struct {
@@ -1480,10 +1511,12 @@ func writeNFO(course CourseResponse, outputDir string) error {
 		premiered = course.UpdatedAt[:10]
 	}
 
-	// Build genres from categories
+	// Build genres from categories (skip empty names - series only have IDs)
 	var genres []string
 	for _, cat := range course.Categories {
-		genres = append(genres, cat.Name)
+		if cat.Name != "" {
+			genres = append(genres, cat.Name)
+		}
 	}
 
 	// Build tags
@@ -1492,23 +1525,33 @@ func writeNFO(course CourseResponse, outputDir string) error {
 		tags = append(tags, course.Skill)
 	}
 
-	// Build actor list from instructors array (preferred) or fall back to splitting instructor_name
+	// Build actor list from instructors array (if names populated) or fall back to splitting instructor_name
 	var actors []NFOActor
-	if len(course.Instructors) > 0 {
+	hasValidInstructors := false
+	if len(course.Instructors) > 0 && course.Instructors[0].Name != "" {
+		hasValidInstructors = true
 		for _, inst := range course.Instructors {
 			actor := NFOActor{
 				Name: inst.Name,
 				Role: "Instructor",
 			}
-			// Add headshot if available
+			// Add bio if available
+			if inst.Bio != nil {
+				if bio, ok := inst.Bio.(string); ok && bio != "" {
+					actor.Bio = bio
+				}
+			}
+			// Add headshot - use local filename (downloaded separately)
 			if inst.HeadshotURL != nil {
-				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
-					actor.Thumb = headshot
+				if _, ok := inst.HeadshotURL.(string); ok {
+					// Reference local file
+					actor.Thumb = sanitizeFilename(inst.Name) + ".jpg"
 				}
 			}
 			actors = append(actors, actor)
 		}
-	} else {
+	}
+	if !hasValidInstructors {
 		// Fallback: split instructor_name string
 		instructorNames := splitInstructorNames(course.InstructorName)
 		for _, name := range instructorNames {
