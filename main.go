@@ -1492,14 +1492,31 @@ func writeNFO(course CourseResponse, outputDir string) error {
 		tags = append(tags, course.Skill)
 	}
 
-	// Split instructor names and build actor list
-	instructorNames := splitInstructorNames(course.InstructorName)
+	// Build actor list from instructors array (preferred) or fall back to splitting instructor_name
 	var actors []NFOActor
-	for _, name := range instructorNames {
-		actors = append(actors, NFOActor{
-			Name: name,
-			Role: "Instructor",
-		})
+	if len(course.Instructors) > 0 {
+		for _, inst := range course.Instructors {
+			actor := NFOActor{
+				Name: inst.Name,
+				Role: "Instructor",
+			}
+			// Add headshot if available
+			if inst.HeadshotURL != nil {
+				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
+					actor.Thumb = headshot
+				}
+			}
+			actors = append(actors, actor)
+		}
+	} else {
+		// Fallback: split instructor_name string
+		instructorNames := splitInstructorNames(course.InstructorName)
+		for _, name := range instructorNames {
+			actors = append(actors, NFOActor{
+				Name: name,
+				Role: "Instructor",
+			})
+		}
 	}
 
 	// Build the NFO struct
