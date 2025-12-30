@@ -703,7 +703,7 @@ func showMetadata(client *http.Client, datDir string, jsonOutput bool, arg strin
 
 func showCourseMetadata(client *http.Client, profileUUID string, jsonOutput bool, classSlug string) error {
 	// Fetch course data
-	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true", nil)
+	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true&include=instructors,chapters,categories", nil)
 	if err != nil {
 		return err
 	}
@@ -844,7 +844,7 @@ func showCategoryMetadata(client *http.Client, profileUUID string, jsonOutput bo
 		var courses []courseInfo
 
 		for _, slug := range courseSlugs {
-			req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+slug+"?deep=true", nil)
+			req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+slug+"?deep=true&include=instructors,chapters,categories", nil)
 			if err != nil {
 				continue
 			}
@@ -938,8 +938,8 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		return fmt.Errorf("invalid class slug")
 	}
 
-	//get class info (include=instructors,chapters ensures we get full data for series)
-	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true&include=instructors,chapters", nil)
+	//get class info (include=instructors,chapters,categories ensures we get full data for series)
+	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true&include=instructors,chapters,categories", nil)
 	req.Header.Set("Referer", "https://www.masterclass.com/classes/"+classSlug)
 	req.Header.Set("Mc-Profile-Id", profile.UUID)
 	if err != nil {
@@ -1521,10 +1521,17 @@ func writeNFO(course CourseResponse, outputDir string) error {
 		}
 	}
 
-	// Build tags
+	// Note: <tag> in NFO becomes Collections in Plex (via XBMCnfoTVImporter)
+	// Use primary category as the tag (e.g., "Business") for collection grouping
 	var tags []string
-	if course.Skill != "" {
-		tags = append(tags, course.Skill)
+	if course.PrimaryCategory.ID != 0 {
+		// Find the primary category name from categories array
+		for _, cat := range course.Categories {
+			if cat.ID == course.PrimaryCategory.ID && cat.Name != "" {
+				tags = append(tags, cat.Name)
+				break
+			}
+		}
 	}
 
 	// Build actor list from instructors array (if names populated) or fall back to splitting instructor_name
@@ -1543,11 +1550,10 @@ func writeNFO(course CourseResponse, outputDir string) error {
 					actor.Bio = bio
 				}
 			}
-			// Add headshot - use local filename (downloaded separately)
+			// Add headshot URL (Plex/Kodi need full URL, not local filename)
 			if inst.HeadshotURL != nil {
-				if _, ok := inst.HeadshotURL.(string); ok {
-					// Reference local file
-					actor.Thumb = sanitizeFilename(inst.Name) + ".jpg"
+				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
+					actor.Thumb = headshot + "?width=500&height=500&fit=cover&dpr=2"
 				}
 			}
 			actors = append(actors, actor)
