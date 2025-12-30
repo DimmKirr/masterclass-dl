@@ -959,7 +959,7 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		return err
 	}
 
-	outputDir = path.Join(outputDir, class.Title)
+	outputDir = path.Join(outputDir, sanitizeFilename(class.Title))
 	err = os.MkdirAll(outputDir, 0755)
 	if err != nil {
 		return err
@@ -1091,12 +1091,12 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 				var baseFileName string
 				if nameAsSeries {
 					if chapter.IsExampleLesson {
-						baseFileName = fmt.Sprintf("s01e%02d-%s-Extra_trailer", chapter.Number, chapter.Title)
+						baseFileName = fmt.Sprintf("s01e%02d-%s-Extra_trailer", chapter.Number, sanitizeFilename(chapter.Title))
 					} else {
-						baseFileName = fmt.Sprintf("s01e%02d-%s", chapter.Number, chapter.Title)
+						baseFileName = fmt.Sprintf("s01e%02d-%s", chapter.Number, sanitizeFilename(chapter.Title))
 					}
 				} else {
-					baseFileName = fmt.Sprintf("%03d-%s", chapter.Number, chapter.Title)
+					baseFileName = fmt.Sprintf("%03d-%s", chapter.Number, sanitizeFilename(chapter.Title))
 				}
 				nfoFilename := baseFileName + ".nfo"
 				err = writeEpisodeNFO(chapter, class, outputDir, nfoFilename)
@@ -1321,13 +1321,13 @@ func downloadChapter(client *http.Client, profileUUID string, outputDir string, 
 	if nameAsSeries {
 		// TV series format: s01e01-Title.mp4 or s01e01-Title-Extra_trailer.mp4
 		if chapter.IsExampleLesson {
-			baseFileName = fmt.Sprintf("s01e%02d-%s-Extra_trailer", chapter.Number, chapter.Title)
+			baseFileName = fmt.Sprintf("s01e%02d-%s-Extra_trailer", chapter.Number, sanitizeFilename(chapter.Title))
 		} else {
-			baseFileName = fmt.Sprintf("s01e%02d-%s", chapter.Number, chapter.Title)
+			baseFileName = fmt.Sprintf("s01e%02d-%s", chapter.Number, sanitizeFilename(chapter.Title))
 		}
 	} else {
 		// Default format: 001-Title.mp4
-		baseFileName = fmt.Sprintf("%03d-%s", chapter.Number, chapter.Title)
+		baseFileName = fmt.Sprintf("%03d-%s", chapter.Number, sanitizeFilename(chapter.Title))
 	}
 	outputFile := path.Join(outputDir, baseFileName+".mp4")
 
