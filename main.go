@@ -982,7 +982,9 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 				fmt.Printf("Warning: failed to download fanart: %v\n", err)
 			}
 		}
-		// Download instructor portraits
+		// Download instructor portraits to .actors/ folder (Kodi/Plex standard)
+		actorsDir := path.Join(outputDir, ".actors")
+		os.MkdirAll(actorsDir, 0755)
 		for _, inst := range class.Instructors {
 			if inst.Name != "" {
 				var portraitURL string
@@ -996,9 +998,9 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 					portraitURL = class.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
 				}
 				if portraitURL != "" {
-					filename := sanitizeFilename(inst.Name) + ".jpg"
+					filename := actorFilename(inst.Name) + ".jpg"
 					fmt.Printf("Downloading portrait: %s\n", inst.Name)
-					err = downloadImage(client, portraitURL, path.Join(outputDir, filename))
+					err = downloadImage(client, portraitURL, path.Join(actorsDir, filename))
 					if err != nil {
 						fmt.Printf("Warning: failed to download portrait for %s: %v\n", inst.Name, err)
 					}
@@ -1439,6 +1441,14 @@ func sanitizeFilename(name string) string {
 	return replacer.Replace(name)
 }
 
+// actorFilename converts actor name to .actors/ folder format (spaces → underscores)
+// This matches XBMCnfoTVImporter.bundle expectations
+func actorFilename(name string) string {
+	// First sanitize, then replace spaces with underscores
+	sanitized := sanitizeFilename(name)
+	return strings.ReplaceAll(sanitized, " ", "_")
+}
+
 func downloadImage(client *http.Client, imageURL string, outputPath string) error {
 	resp, err := client.Get(imageURL)
 	if err != nil {
@@ -1611,8 +1621,8 @@ func writeNFO(course CourseResponse, outputDir string) error {
 					actor.Bio = bio
 				}
 			}
-			// Use local portrait filename (downloaded alongside NFO)
-			actor.Thumb = sanitizeFilename(inst.Name) + ".jpg"
+			// Use local portrait filename in .actors/ folder (Kodi/Plex standard)
+			actor.Thumb = ".actors/" + actorFilename(inst.Name) + ".jpg"
 			actors = append(actors, actor)
 		}
 	}
@@ -1624,8 +1634,8 @@ func writeNFO(course CourseResponse, outputDir string) error {
 				Name: name,
 				Role: "Instructor",
 			}
-			// Use local portrait filename
-			actor.Thumb = sanitizeFilename(name) + ".jpg"
+			// Use local portrait filename in .actors/ folder
+			actor.Thumb = ".actors/" + actorFilename(name) + ".jpg"
 			actors = append(actors, actor)
 		}
 	}
@@ -1697,8 +1707,8 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 					actor.Bio = bio
 				}
 			}
-			// Use local portrait filename (downloaded alongside NFO)
-			actor.Thumb = sanitizeFilename(inst.Name) + ".jpg"
+			// Use local portrait filename in .actors/ folder (Kodi/Plex standard)
+			actor.Thumb = ".actors/" + actorFilename(inst.Name) + ".jpg"
 			actors = append(actors, actor)
 		}
 	}
@@ -1710,8 +1720,8 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 				Name: name,
 				Role: "Instructor",
 			}
-			// Use local portrait filename
-			actor.Thumb = sanitizeFilename(name) + ".jpg"
+			// Use local portrait filename in .actors/ folder
+			actor.Thumb = ".actors/" + actorFilename(name) + ".jpg"
 			actors = append(actors, actor)
 		}
 	}
