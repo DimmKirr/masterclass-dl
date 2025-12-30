@@ -1610,10 +1610,15 @@ func writeNFO(course CourseResponse, outputDir string) error {
 	hasValidInstructors := false
 	if len(course.Instructors) > 0 && course.Instructors[0].Name != "" {
 		hasValidInstructors = true
-		for _, inst := range course.Instructors {
+		numInstructors := len(course.Instructors)
+		for i, inst := range course.Instructors {
+			role := "Instructor"
+			if numInstructors > 1 {
+				role = fmt.Sprintf("Instructor %d", i+1)
+			}
 			actor := NFOActor{
 				Name: inst.Name,
-				Role: "Instructor",
+				Role: role,
 			}
 			// Add bio if available
 			if inst.Bio != nil {
@@ -1638,10 +1643,15 @@ func writeNFO(course CourseResponse, outputDir string) error {
 	if !hasValidInstructors {
 		// Fallback: split instructor_name string
 		instructorNames := splitInstructorNames(course.InstructorName)
-		for _, name := range instructorNames {
+		numInstructors := len(instructorNames)
+		for i, name := range instructorNames {
+			role := "Instructor"
+			if numInstructors > 1 {
+				role = fmt.Sprintf("Instructor %d", i+1)
+			}
 			actor := NFOActor{
 				Name: name,
-				Role: "Instructor",
+				Role: role,
 			}
 			// Use poster as fallback thumb URL
 			if course.Primary2x3 != "" {
@@ -1707,10 +1717,15 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 	hasValidInstructors := false
 	if len(course.Instructors) > 0 && course.Instructors[0].Name != "" {
 		hasValidInstructors = true
-		for _, inst := range course.Instructors {
+		numInstructors := len(course.Instructors)
+		for i, inst := range course.Instructors {
+			role := "Instructor"
+			if numInstructors > 1 {
+				role = fmt.Sprintf("Instructor %d", i+1)
+			}
 			actor := NFOActor{
 				Name: inst.Name,
-				Role: "Instructor",
+				Role: role,
 			}
 			// Add bio if available
 			if inst.Bio != nil {
@@ -1734,10 +1749,15 @@ func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, n
 	if !hasValidInstructors {
 		// Fallback: split instructor_name string
 		instructorNames := splitInstructorNames(course.InstructorName)
-		for _, name := range instructorNames {
+		numInstructors := len(instructorNames)
+		for i, name := range instructorNames {
+			role := "Instructor"
+			if numInstructors > 1 {
+				role = fmt.Sprintf("Instructor %d", i+1)
+			}
 			actor := NFOActor{
 				Name: name,
-				Role: "Instructor",
+				Role: role,
 			}
 			// Use poster as fallback thumb URL
 			if course.Primary2x3 != "" {
