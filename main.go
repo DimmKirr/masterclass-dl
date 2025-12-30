@@ -964,6 +964,7 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 	if err != nil {
 		return err
 	}
+	fmt.Printf("Output directory: %s\n", outputDir)
 
 	// Download show artwork (Plex naming convention)
 	if downloadPosters {
@@ -986,7 +987,47 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 	if downloadPdfs && !metadataOnly {
 		fmt.Println("Downloading PDFs")
 		for _, pdf := range class.AllPDFs {
-			req, err := http.NewRequest("GET", pdf.URL, nil)
+			pdfURL := pdf.URL
+			pdfTitle := pdf.Title
+
+			// If PDF only has ID (common for series), fetch full details
+			if pdfURL == "" && pdf.ID > 0 {
+				fmt.Printf("Fetching PDF details for ID %d...\n", pdf.ID)
+				pdfReq, err := http.NewRequest("GET", fmt.Sprintf("https://www.masterclass.com/jsonapi/v1/pdfs/%d", pdf.ID), nil)
+				if err != nil {
+					fmt.Printf("Warning: failed to create PDF request: %v\n", err)
+					continue
+				}
+				pdfReq.Header.Set("Referer", "https://www.masterclass.com/classes/"+classSlug)
+				pdfReq.Header.Set("Mc-Profile-Id", profile.UUID)
+				pdfResp, err := client.Do(pdfReq)
+				if err != nil {
+					fmt.Printf("Warning: failed to fetch PDF %d: %v\n", pdf.ID, err)
+					continue
+				}
+				if pdfResp.StatusCode == 200 {
+					var pdfDetails struct {
+						Title string `json:"title"`
+						URL   string `json:"url"`
+					}
+					err = json.NewDecoder(pdfResp.Body).Decode(&pdfDetails)
+					pdfResp.Body.Close()
+					if err == nil && pdfDetails.URL != "" {
+						pdfURL = pdfDetails.URL
+						pdfTitle = pdfDetails.Title
+					}
+				} else {
+					pdfResp.Body.Close()
+					fmt.Printf("Warning: PDF %d returned status %d\n", pdf.ID, pdfResp.StatusCode)
+					continue
+				}
+			}
+
+			if pdfURL == "" {
+				fmt.Printf("Skipping PDF with empty URL: %s\n", pdfTitle)
+				continue
+			}
+			req, err := http.NewRequest("GET", pdfURL, nil)
 			if err != nil {
 				return err
 			}
@@ -1000,7 +1041,8 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 			if resp.StatusCode != 200 {
 				return fmt.Errorf("failed to download PDF")
 			}
-			pdfFile, err := os.Create(path.Join(outputDir, pdf.Title+".pdf"))
+			fmt.Printf("Downloading: %s\n", pdfTitle)
+			pdfFile, err := os.Create(path.Join(outputDir, pdfTitle+".pdf"))
 			if err != nil {
 				return err
 			}
