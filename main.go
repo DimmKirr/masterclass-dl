@@ -984,13 +984,21 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		}
 		// Download instructor portraits
 		for _, inst := range class.Instructors {
-			if inst.Name != "" && inst.HeadshotURL != nil {
-				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
-					// Add sizing params for higher quality portrait
-					headshotURL := headshot + "?width=500&height=500&fit=cover&dpr=2"
+			if inst.Name != "" {
+				var portraitURL string
+				if inst.HeadshotURL != nil {
+					if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
+						portraitURL = headshot + "?width=500&height=500&fit=cover&dpr=2"
+					}
+				}
+				// Fallback to poster image if no headshot
+				if portraitURL == "" && class.Primary2x3 != "" {
+					portraitURL = class.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+				}
+				if portraitURL != "" {
 					filename := sanitizeFilename(inst.Name) + ".jpg"
 					fmt.Printf("Downloading portrait: %s\n", inst.Name)
-					err = downloadImage(client, headshotURL, path.Join(outputDir, filename))
+					err = downloadImage(client, portraitURL, path.Join(outputDir, filename))
 					if err != nil {
 						fmt.Printf("Warning: failed to download portrait for %s: %v\n", inst.Name, err)
 					}
@@ -1080,7 +1088,7 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 				continue
 			}
 			fmt.Printf("Downloading chapter %d: %s\n", chapter.Number, chapter.Title)
-			err := downloadChapter(client, profile.UUID, outputDir, ytdlExec, chapter, class, apiKey, nameAsSeries)
+			err := downloadChapter(client, profile.UUID, outputDir, ytdlExec, chapter, class, apiKey, nameAsSeries, writeNfo)
 			if err != nil {
 				return err
 			}
@@ -1093,6 +1101,32 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		err = writeNFO(class, outputDir)
 		if err != nil {
 			fmt.Printf("Warning: failed to write NFO: %v\n", err)
+		}
+
+		// Write episode NFOs when in metadata-only mode
+		if metadataOnly {
+			fmt.Println("Writing episode NFO files")
+			for _, chapter := range class.Chapters {
+				if chapterSlug != "" && chapter.Slug != chapterSlug {
+					continue
+				}
+				// Generate filename matching video naming convention
+				var baseFileName string
+				if nameAsSeries {
+					if chapter.IsExampleLesson {
+						baseFileName = fmt.Sprintf("s01e%02d-%s-Extra_trailer", chapter.Number, chapter.Title)
+					} else {
+						baseFileName = fmt.Sprintf("s01e%02d-%s", chapter.Number, chapter.Title)
+					}
+				} else {
+					baseFileName = fmt.Sprintf("%03d-%s", chapter.Number, chapter.Title)
+				}
+				nfoFilename := baseFileName + ".nfo"
+				err = writeEpisodeNFO(chapter, class, outputDir, nfoFilename)
+				if err != nil {
+					fmt.Printf("Warning: failed to write episode NFO for %s: %v\n", chapter.Title, err)
+				}
+			}
 		}
 	}
 
@@ -1226,7 +1260,7 @@ func downloadCategory(client *http.Client, datDir string, outputDir string, down
 	return nil
 }
 
-func downloadChapter(client *http.Client, profileUUID string, outputDir string, ytdlExec string, chapter Chapter, course CourseResponse, apiKey string, nameAsSeries bool) error {
+func downloadChapter(client *http.Client, profileUUID string, outputDir string, ytdlExec string, chapter Chapter, course CourseResponse, apiKey string, nameAsSeries bool, writeNfo bool) error {
 	// Use CycleTLS for the media metadata API request to bypass any Cloudflare protection
 	cycleclient := cycletls.Init()
 	// Don't close cycleclient - it causes a panic and isn't necessary for short-lived processes
@@ -1341,13 +1375,16 @@ func downloadChapter(client *http.Client, profileUUID string, outputDir string, 
 	episodeID := fmt.Sprintf("s01e%02d", chapter.Number)
 
 	// Full metadata for all downloads
+	// Include multiple description tags for compatibility (description, comment, long_description, synopsis)
 	metadataArgs := fmt.Sprintf(
-		"ffmpeg:-metadata title=%q -metadata show=%q -metadata artist=%q -metadata genre=%q -metadata date=%q -metadata description=%q -metadata synopsis=%q -metadata season_number=1 -metadata episode_sort=%d -metadata episode_id=%q -metadata network=%q",
+		"ffmpeg:-metadata title=%q -metadata show=%q -metadata artist=%q -metadata genre=%q -metadata date=%q -metadata description=%q -metadata comment=%q -metadata long_description=%q -metadata synopsis=%q -metadata season_number=1 -metadata episode_sort=%d -metadata episode_id=%q -metadata network=%q",
 		chapter.Title,
 		course.Title,
 		course.InstructorName,
 		genre,
 		dateStr,
+		chapter.Abstract,
+		chapter.Abstract,
 		chapter.Abstract,
 		course.Overview,
 		chapter.Number,
@@ -1371,6 +1408,15 @@ func downloadChapter(client *http.Client, profileUUID string, outputDir string, 
 	err = cmd.Run()
 	if err != nil {
 		return err
+	}
+
+	// Write episode NFO if requested
+	if writeNfo {
+		nfoFilename := baseFileName + ".nfo"
+		err = writeEpisodeNFO(chapter, course, outputDir, nfoFilename)
+		if err != nil {
+			fmt.Printf("Warning: failed to write episode NFO: %v\n", err)
+		}
 	}
 
 	return nil
@@ -1447,6 +1493,21 @@ type NFOUniqueID struct {
 	Type    string `xml:"type,attr"`
 	Default bool   `xml:"default,attr"`
 	Value   string `xml:",chardata"`
+}
+
+// EpisodeNFO represents the episodedetails.nfo format for Kodi/Plex/Jellyfin
+type EpisodeNFO struct {
+	XMLName   xml.Name    `xml:"episodedetails"`
+	Title     string      `xml:"title"`
+	ShowTitle string      `xml:"showtitle,omitempty"`
+	Season    int         `xml:"season"`
+	Episode   int         `xml:"episode"`
+	Plot      string      `xml:"plot"`
+	Aired     string      `xml:"aired,omitempty"`
+	Runtime   int         `xml:"runtime,omitempty"`
+	Director  string      `xml:"director,omitempty"`
+	Studio    string      `xml:"studio,omitempty"`
+	UniqueID  NFOUniqueID `xml:"uniqueid"`
 }
 
 // splitInstructorNames splits an instructor string into individual names.
@@ -1556,6 +1617,10 @@ func writeNFO(course CourseResponse, outputDir string) error {
 					actor.Thumb = headshot + "?width=500&height=500&fit=cover&dpr=2"
 				}
 			}
+			// Fallback to poster image if no headshot
+			if actor.Thumb == "" && course.Primary2x3 != "" {
+				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+			}
 			actors = append(actors, actor)
 		}
 	}
@@ -1563,10 +1628,15 @@ func writeNFO(course CourseResponse, outputDir string) error {
 		// Fallback: split instructor_name string
 		instructorNames := splitInstructorNames(course.InstructorName)
 		for _, name := range instructorNames {
-			actors = append(actors, NFOActor{
+			actor := NFOActor{
 				Name: name,
 				Role: "Instructor",
-			})
+			}
+			// Use poster as fallback for actor thumb
+			if course.Primary2x3 != "" {
+				actor.Thumb = course.Primary2x3 + "?width=500&height=500&fit=cover&dpr=2"
+			}
+			actors = append(actors, actor)
 		}
 	}
 
@@ -1597,6 +1667,51 @@ func writeNFO(course CourseResponse, outputDir string) error {
 	output, err := xml.MarshalIndent(nfo, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal NFO: %v", err)
+	}
+
+	// Add XML declaration
+	xmlContent := []byte(xml.Header + string(output) + "\n")
+
+	return os.WriteFile(nfoPath, xmlContent, 0644)
+}
+
+// writeEpisodeNFO writes an episodedetails.nfo file for a single episode
+func writeEpisodeNFO(chapter Chapter, course CourseResponse, outputDir string, nfoFilename string) error {
+	nfoPath := path.Join(outputDir, nfoFilename)
+
+	// Extract aired date from chapter's UpdatedAt (YYYY-MM-DD)
+	aired := ""
+	if chapter.UpdatedAt != "" && len(chapter.UpdatedAt) >= 10 {
+		aired = chapter.UpdatedAt[:10]
+	}
+
+	// Calculate runtime in minutes from DurationSecs
+	runtime := 0
+	if chapter.DurationSecs > 0 {
+		runtime = chapter.DurationSecs / 60
+	}
+
+	nfo := EpisodeNFO{
+		Title:     chapter.Title,
+		ShowTitle: course.Title,
+		Season:    1,
+		Episode:   chapter.Number,
+		Plot:      chapter.Abstract,
+		Aired:     aired,
+		Runtime:   runtime,
+		Director:  course.InstructorName,
+		Studio:    "MasterClass",
+		UniqueID: NFOUniqueID{
+			Type:    "masterclass",
+			Default: true,
+			Value:   chapter.Slug,
+		},
+	}
+
+	// Marshal to XML with indentation
+	output, err := xml.MarshalIndent(nfo, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal episode NFO: %v", err)
 	}
 
 	// Add XML declaration
