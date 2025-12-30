@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"encoding/xml"
@@ -71,6 +72,24 @@ Supported URL formats:
   - Category: https://www.masterclass.com/homepage/science-and-tech`,
 		Args: cobra.MatchAll(cobra.MinimumNArgs(1)),
 		Run: func(cmd *cobra.Command, args []string) {
+			// Log enabled options
+			if writeNfo {
+				fmt.Println("--write-nfo specified, will write tvshow.nfo file")
+			}
+			if nameAsSeries {
+				fmt.Println("--name-files-as-series specified, will use s01e01 naming format")
+			}
+			if !downloadPdfs {
+				fmt.Println("--pdfs=false specified, skipping PDF downloads")
+			}
+			if !downloadPosters {
+				fmt.Println("--posters=false specified, skipping poster/fanart downloads")
+			}
+			if limit != 10 {
+				fmt.Printf("--limit=%d specified for category downloads\n", limit)
+			}
+			fmt.Println()
+
 			for _, arg := range args {
 				// Check if this is a category/homepage URL
 				if strings.Contains(arg, "/homepage/") {
@@ -124,9 +143,25 @@ Supported URL formats:
 		},
 	}
 
+	var jsonOutput bool
+	var metadataCmd = &cobra.Command{
+		Use:   "metadata [url]",
+		Short: "Show metadata for a class from masterclass.com",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			err := showMetadata(getClient(datDir), datDir, jsonOutput, args[0])
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+		},
+	}
+	metadataCmd.Flags().BoolVar(&jsonOutput, "json", true, "Output as JSON")
+
 	rootCmd.AddCommand(downloadCmd)
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(loginStatusCmd)
+	rootCmd.AddCommand(metadataCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -626,6 +661,246 @@ func loginStatus(client *http.Client, datDir string) error {
 	fmt.Printf("Subscription Status: %s\n", subscription.Status)
 	fmt.Printf("Subscription Expires At: %s\n", subscription.ExpiresAt)
 	fmt.Printf("Subscription Remaining Days: %d\n", subscription.RemainingDays)
+	return nil
+}
+
+func showMetadata(client *http.Client, datDir string, jsonOutput bool, arg string) error {
+	if client.Jar.Cookies(&url.URL{Scheme: "https", Host: "www.masterclass.com"}) == nil {
+		return fmt.Errorf("cookies not found. Please login first")
+	}
+
+	profile, err := getProfile(client, datDir)
+	if err != nil {
+		return err
+	}
+
+	// Check if this is a category/homepage URL
+	if strings.Contains(arg, "/homepage/") {
+		return showCategoryMetadata(client, profile.UUID, jsonOutput, arg)
+	}
+
+	// Parse class slug from URL
+	classSlug := arg
+	classSlug = strings.TrimPrefix(classSlug, "https://www.masterclass.com/classes/")
+	classSlug = strings.TrimPrefix(classSlug, "https://www.masterclass.com/series/")
+	classSlug = strings.TrimSuffix(classSlug, "/")
+	// Remove any chapter suffix
+	if strings.Contains(classSlug, "/chapters/") {
+		classSlug = strings.Split(classSlug, "/chapters/")[0]
+	}
+
+	if classSlug == "" {
+		return fmt.Errorf("invalid class URL")
+	}
+
+	return showCourseMetadata(client, profile.UUID, jsonOutput, classSlug)
+}
+
+func showCourseMetadata(client *http.Client, profileUUID string, jsonOutput bool, classSlug string) error {
+	// Fetch course data
+	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Referer", "https://www.masterclass.com/classes/"+classSlug)
+	req.Header.Set("Mc-Profile-Id", profileUUID)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("failed to get class info: status %d", resp.StatusCode)
+	}
+
+	// Read raw response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		// Pretty print JSON
+		var prettyJSON bytes.Buffer
+		err = json.Indent(&prettyJSON, body, "", "  ")
+		if err != nil {
+			// If can't indent, just print raw
+			fmt.Println(string(body))
+		} else {
+			fmt.Println(prettyJSON.String())
+		}
+	} else {
+		// Parse and show key fields
+		var course CourseResponse
+		err = json.Unmarshal(body, &course)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Title: %s\n", course.Title)
+		fmt.Printf("Skill: %s\n", course.Skill)
+		fmt.Printf("Headline: %s\n", course.Headline)
+		fmt.Printf("VanityName: %s\n", course.VanityName)
+		fmt.Printf("InstructorName: %s\n", course.InstructorName)
+		fmt.Printf("Slug: %s\n", course.Slug)
+	}
+
+	return nil
+}
+
+func showCategoryMetadata(client *http.Client, profileUUID string, jsonOutput bool, arg string) error {
+	// Parse the category URL to extract bundle name
+	categorySlug := arg
+	categorySlug = strings.TrimPrefix(categorySlug, "https://www.masterclass.com/")
+	categorySlug = strings.TrimPrefix(categorySlug, "http://www.masterclass.com/")
+	categorySlug = strings.TrimSuffix(categorySlug, "/")
+
+	// Convert path to bundle format: homepage/business -> homepage-business
+	bundle := strings.ReplaceAll(categorySlug, "/", "-")
+
+	fmt.Printf("Fetching category: %s (bundle: %s)\n", categorySlug, bundle)
+
+	// Call the content-rows API
+	apiURL := fmt.Sprintf("https://www.masterclass.com/jsonapi/v3/content-rows?filter[platform]=web&filter[bundle]=%s&include_items=true", bundle)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Referer", "https://www.masterclass.com/"+categorySlug)
+	req.Header.Set("Mc-Profile-Id", profileUUID)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to get category info: status=%d, body=%s", resp.StatusCode, string(body))
+	}
+
+	var contentRows ContentRowsResponse
+	err = json.NewDecoder(resp.Body).Decode(&contentRows)
+	if err != nil {
+		return fmt.Errorf("failed to parse content rows: %v", err)
+	}
+
+	// Extract unique course slugs
+	courseMap := make(map[string]bool)
+	var courseSlugs []string
+	for _, row := range contentRows {
+		for _, item := range row.Items {
+			resource := item.Default.Resource
+			if resource.EntitySlug != "" && resource.EntityType == "course" {
+				if !courseMap[resource.EntitySlug] {
+					courseMap[resource.EntitySlug] = true
+					courseSlugs = append(courseSlugs, resource.EntitySlug)
+				}
+			}
+		}
+	}
+
+	fmt.Printf("\nFound %d courses in category:\n", len(courseSlugs))
+	fmt.Println(strings.Repeat("-", 80))
+
+	if jsonOutput {
+		// Output as JSON array of course metadata
+		fmt.Println("[")
+		for i, slug := range courseSlugs {
+			err := showCourseMetadata(client, profileUUID, true, slug)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to get metadata for %s: %v\n", slug, err)
+				continue
+			}
+			if i < len(courseSlugs)-1 {
+				fmt.Println(",")
+			}
+		}
+		fmt.Println("]")
+	} else {
+		// Output as table - fetch all courses first
+		type courseInfo struct {
+			Slug              string
+			Title             string
+			Skill             string
+			Headline          string
+			VanityName        string
+			InstructorName    string
+			InstructorTagline string
+			Type              string
+			NumChapters       int
+			TotalSeconds      int
+		}
+		var courses []courseInfo
+
+		for _, slug := range courseSlugs {
+			req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+slug+"?deep=true", nil)
+			if err != nil {
+				continue
+			}
+			req.Header.Set("Referer", "https://www.masterclass.com/classes/"+slug)
+			req.Header.Set("Mc-Profile-Id", profileUUID)
+
+			resp, err := client.Do(req)
+			if err != nil {
+				continue
+			}
+
+			var course CourseResponse
+			err = json.NewDecoder(resp.Body).Decode(&course)
+			resp.Body.Close()
+			if err != nil {
+				continue
+			}
+
+			courses = append(courses, courseInfo{
+				Slug:              course.Slug,
+				Title:             course.Title,
+				Skill:             course.Skill,
+				Headline:          course.Headline,
+				VanityName:        course.VanityName,
+				InstructorName:    course.InstructorName,
+				InstructorTagline: course.InstructorTagline,
+				Type:              course.Type,
+				NumChapters:       course.NumChapters,
+				TotalSeconds:      course.TotalSeconds,
+			})
+		}
+
+		// Helper to truncate strings
+		trunc := func(s string, max int) string {
+			if len(s) > max {
+				return s[:max-3] + "..."
+			}
+			return s
+		}
+
+		// Print table header
+		fmt.Printf("\n%-3s | %-7s | %-45s | %-45s | %-30s | %-8s | %-30s | %-4s | %-6s | %-40s\n",
+			"#", "Type", "Title", "Skill", "Headline", "Vanity", "Instructor", "Chap", "Mins", "Slug")
+		fmt.Println(strings.Repeat("-", 240))
+
+		// Print rows
+		for i, c := range courses {
+			fmt.Printf("%-3d | %-7s | %-45s | %-45s | %-30s | %-8s | %-30s | %-4d | %-6d | %-40s\n",
+				i+1,
+				c.Type,
+				trunc(c.Title, 45),
+				trunc(c.Skill, 45),
+				trunc(c.Headline, 30),
+				trunc(c.VanityName, 8),
+				trunc(c.InstructorName, 30),
+				c.NumChapters,
+				c.TotalSeconds/60,
+				trunc(c.Slug, 40))
+		}
+	}
+
 	return nil
 }
 
