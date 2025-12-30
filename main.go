@@ -1364,6 +1364,61 @@ type NFOUniqueID struct {
 	Value   string `xml:",chardata"`
 }
 
+// splitInstructorNames splits an instructor string into individual names.
+// Handles patterns like:
+//   - "Kim Kardashian" -> ["Kim Kardashian"]
+//   - "Mike Cessario and Laura Modi" -> ["Mike Cessario", "Laura Modi"]
+//   - "Jeff Goodby & Rich Silverstein" -> ["Jeff Goodby", "Rich Silverstein"]
+//   - "Rich Paul, Bob Myers, and Draymond Green" -> ["Rich Paul", "Bob Myers", "Draymond Green"]
+func splitInstructorNames(instructorStr string) []string {
+	var names []string
+
+	// First split by comma
+	parts := strings.Split(instructorStr, ",")
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		// Remove leading "and " if present (from "A, B, and C" pattern)
+		part = strings.TrimPrefix(part, "and ")
+		part = strings.TrimSpace(part)
+
+		// Check for " and " within the part
+		if strings.Contains(part, " and ") {
+			subParts := strings.Split(part, " and ")
+			for _, sp := range subParts {
+				sp = strings.TrimSpace(sp)
+				if sp != "" {
+					names = append(names, sp)
+				}
+			}
+			continue
+		}
+
+		// Check for " & " within the part
+		if strings.Contains(part, " & ") {
+			subParts := strings.Split(part, " & ")
+			for _, sp := range subParts {
+				sp = strings.TrimSpace(sp)
+				if sp != "" {
+					names = append(names, sp)
+				}
+			}
+			continue
+		}
+
+		// Single name
+		if part != "" {
+			names = append(names, part)
+		}
+	}
+
+	return names
+}
+
 func writeNFO(course CourseResponse, outputDir string) error {
 	nfoPath := path.Join(outputDir, "tvshow.nfo")
 
@@ -1385,6 +1440,16 @@ func writeNFO(course CourseResponse, outputDir string) error {
 		tags = append(tags, course.Skill)
 	}
 
+	// Split instructor names and build actor list
+	instructorNames := splitInstructorNames(course.InstructorName)
+	var actors []NFOActor
+	for _, name := range instructorNames {
+		actors = append(actors, NFOActor{
+			Name: name,
+			Role: "Instructor",
+		})
+	}
+
 	// Build the NFO struct
 	nfo := TVShowNFO{
 		Title:     course.Title,
@@ -1396,12 +1461,7 @@ func writeNFO(course CourseResponse, outputDir string) error {
 		Studio:    "MasterClass",
 		Premiered: premiered,
 		Runtime:   course.TotalSeconds / 60,
-		Actors: []NFOActor{
-			{
-				Name: course.InstructorName,
-				Role: "Instructor",
-			},
-		},
+		Actors:    actors,
 		Thumbs: []NFOThumb{
 			{Aspect: "poster", Value: "poster.jpg"},
 			{Aspect: "fanart", Value: "fanart.jpg"},
