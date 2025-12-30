@@ -938,8 +938,8 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		return fmt.Errorf("invalid class slug")
 	}
 
-	//get class info (include=instructors ensures we get full instructor data for series)
-	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true&include=instructors", nil)
+	//get class info (include=instructors,chapters ensures we get full data for series)
+	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true&include=instructors,chapters", nil)
 	req.Header.Set("Referer", "https://www.masterclass.com/classes/"+classSlug)
 	req.Header.Set("Mc-Profile-Id", profile.UUID)
 	if err != nil {
