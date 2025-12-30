@@ -938,8 +938,8 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		return fmt.Errorf("invalid class slug")
 	}
 
-	//get class info
-	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true", nil)
+	//get class info (include=instructors ensures we get full instructor data for series)
+	req, err := http.NewRequest("GET", "https://www.masterclass.com/jsonapi/v1/courses/"+classSlug+"?deep=true&include=instructors", nil)
 	req.Header.Set("Referer", "https://www.masterclass.com/classes/"+classSlug)
 	req.Header.Set("Mc-Profile-Id", profile.UUID)
 	if err != nil {
@@ -986,9 +986,11 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		for _, inst := range class.Instructors {
 			if inst.Name != "" && inst.HeadshotURL != nil {
 				if headshot, ok := inst.HeadshotURL.(string); ok && headshot != "" {
+					// Add sizing params for higher quality portrait
+					headshotURL := headshot + "?width=500&height=500&fit=cover&dpr=2"
 					filename := sanitizeFilename(inst.Name) + ".jpg"
 					fmt.Printf("Downloading portrait: %s\n", inst.Name)
-					err = downloadImage(client, headshot, path.Join(outputDir, filename))
+					err = downloadImage(client, headshotURL, path.Join(outputDir, filename))
 					if err != nil {
 						fmt.Printf("Warning: failed to download portrait for %s: %v\n", inst.Name, err)
 					}
