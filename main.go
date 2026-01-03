@@ -1060,12 +1060,19 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		apiKey := "b9517f7d8d1f48c2de88100f2c13e77a9d8e524aed204651acca65202ff5c6cb9244c045795b1fafda617ac5eb0a6c50"
 		fmt.Printf("Using API key\n")
 
+		// Create CycleTLS client once for all chapters (avoid memory leak)
+		cycleclient := cycletls.Init()
+		defer func() {
+			recover() // CycleTLS Close() can panic, ignore it
+			cycleclient.Close()
+		}()
+
 		for _, chapter := range class.Chapters {
 			if chapterSlug != "" && chapter.Slug != chapterSlug {
 				continue
 			}
 			fmt.Printf("Downloading chapter %d: %s\n", chapter.Number, chapter.Title)
-			err := downloadChapter(client, profile.UUID, outputDir, ytdlExec, chapter, class, apiKey, nameAsSeries, writeNfo)
+			err := downloadChapter(cycleclient, client, profile.UUID, outputDir, ytdlExec, chapter, class, apiKey, nameAsSeries, writeNfo)
 			if err != nil {
 				return err
 			}
@@ -1237,11 +1244,7 @@ func downloadCategory(client *http.Client, datDir string, outputDir string, down
 	return nil
 }
 
-func downloadChapter(client *http.Client, profileUUID string, outputDir string, ytdlExec string, chapter Chapter, course CourseResponse, apiKey string, nameAsSeries bool, writeNfo bool) error {
-	// Use CycleTLS for the media metadata API request to bypass any Cloudflare protection
-	cycleclient := cycletls.Init()
-	// Don't close cycleclient - it causes a panic and isn't necessary for short-lived processes
-
+func downloadChapter(cycleclient cycletls.CycleTLS, client *http.Client, profileUUID string, outputDir string, ytdlExec string, chapter Chapter, course CourseResponse, apiKey string, nameAsSeries bool, writeNfo bool) error {
 	// Build cookie string from jar - try getting from www.masterclass.com
 	wwwURL, _ := url.Parse("https://www.masterclass.com")
 	edgeURL, _ := url.Parse("https://edge.masterclass.com")
