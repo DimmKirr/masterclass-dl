@@ -1063,7 +1063,7 @@ func download(client *http.Client, datDir string, outputDir string, downloadPdfs
 		// Create CycleTLS client once for all chapters (avoid memory leak)
 		cycleclient := cycletls.Init()
 		defer func() {
-			recover() // CycleTLS Close() can panic, ignore it
+			defer func() { recover() }() // Catch panic from Close()
 			cycleclient.Close()
 		}()
 
